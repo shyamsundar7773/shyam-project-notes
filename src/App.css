@@ -1,0 +1,250 @@
+#root {
+  min-height: 100vh;
+}
+
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+  flex-direction: column;
+}
+
+.site-header {
+  display: flex;
+  min-height: 76px;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+  padding: 0 clamp(20px, 6vw, 88px);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 11px;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.brand-mark {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid #e8e4f2;
+  border-radius: 11px;
+  background: #f5f2fb;
+  color: var(--accent);
+}
+
+.brand-mark svg {
+  width: 21px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
+}
+
+.brand-name {
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.2px;
+}
+
+.brand-name span {
+  color: var(--muted);
+  font-weight: 450;
+}
+
+.header-label,
+.eyebrow {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 1.25px;
+}
+
+.main-content {
+  width: min(100% - 40px, 960px);
+  flex: 1;
+  margin: 0 auto;
+}
+
+.page-heading {
+  padding: clamp(52px, 9vw, 96px) 0 35px;
+  text-align: center;
+}
+
+.eyebrow {
+  margin: 0 0 14px;
+  color: var(--accent);
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  margin-bottom: 12px;
+  color: var(--ink);
+  font-size: clamp(32px, 5vw, 46px);
+  font-weight: 620;
+  letter-spacing: -1.8px;
+  line-height: 1.12;
+}
+
+.page-description {
+  margin-bottom: 0;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.workspace {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 8px 30px rgb(37 28 58 / 4%);
+}
+
+.connection-status {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  gap: 9px;
+  border-bottom: 1px solid var(--line);
+  padding: 0 20px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.status-indicator {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #c58b38;
+}
+
+.connection-status--ready .status-indicator {
+  background: #77967e;
+}
+
+.connection-status--invalid .status-indicator {
+  background: #bd635e;
+}
+
+.empty-state {
+  display: flex;
+  min-height: 310px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 24px 48px;
+  text-align: center;
+}
+
+.empty-state-icon {
+  display: grid;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 23px;
+  place-items: center;
+  border: 1px solid #e9e5f2;
+  border-radius: 18px;
+  background: #f7f5fb;
+  color: var(--accent);
+}
+
+.empty-state-icon svg {
+  width: 40px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
+.empty-state h2 {
+  margin-bottom: 9px;
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.35px;
+}
+
+.empty-state p {
+  max-width: 390px;
+  margin-bottom: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.site-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  border-top: 1px solid var(--line);
+  margin-top: 72px;
+  padding: 20px clamp(20px, 6vw, 88px);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+@media (max-width: 540px) {
+  .site-header {
+    min-height: 66px;
+    padding-inline: 20px;
+  }
+
+  .header-label {
+    font-size: 8px;
+    letter-spacing: 0.8px;
+  }
+
+  .brand-name {
+    font-size: 12px;
+  }
+
+  .main-content {
+    width: min(100% - 32px, 960px);
+  }
+
+  .page-heading {
+    padding-top: 58px;
+  }
+
+  .page-description {
+    max-width: 300px;
+    margin-inline: auto;
+    font-size: 14px;
+  }
+
+  .connection-status {
+    align-items: flex-start;
+    padding-block: 14px;
+    line-height: 1.55;
+  }
+
+  .status-indicator {
+    margin-top: 5px;
+  }
+
+  .empty-state {
+    min-height: 285px;
+    padding-inline: 20px;
+  }
+
+  .empty-state h2 {
+    max-width: 280px;
+    font-size: 17px;
+  }
+
+  .site-footer {
+    flex-direction: column;
+    margin-top: 52px;
+    padding-inline: 20px;
+  }
+}
