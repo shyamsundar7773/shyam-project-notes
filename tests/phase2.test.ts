@@ -912,6 +912,49 @@ test('AI request surfaces authenticated and upstream HTTP failures', async () =>
   }
 })
 
+test('structured provider failures retain a safe backend code and correlation ID', async () => {
+  let requestedId = ''
+  let displayedError = ''
+  await assert.rejects(
+    requestNoteAi(
+      {
+        kind: 'markdown',
+        content: '# Original heading\n\nOriginal paragraph.',
+        accessToken: 'test-access-token',
+      },
+      {
+        baseUrl: 'https://backend.example',
+        fetcher: async (_input, init) => {
+          requestedId = new Headers(init?.headers).get('x-request-id') ?? ''
+          return Response.json(
+            {
+              error: {
+                code: 'UPSTREAM_FAILURE',
+                message:
+                  'The AI request could not be completed. Your note has not been changed.',
+              },
+            },
+            {
+              status: 502,
+              headers: { 'x-request-id': requestedId },
+            },
+          )
+        },
+      },
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof Error)
+      displayedError = error.message
+      assert.match(displayedError, /The AI request could not be completed/)
+      assert.match(displayedError, /code: UPSTREAM_FAILURE/)
+      return true
+    },
+  )
+  assert.match(requestedId, /^[\w-]{1,64}$/)
+  assert.ok(displayedError.includes(`request ID: ${requestedId}`))
+  assert.equal(displayedError.includes('# Original heading'), false)
+})
+
 test('AI request reports missing backend configuration and network failures', async () => {
   await assert.rejects(
     requestNoteAi(

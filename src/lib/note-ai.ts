@@ -23,6 +23,15 @@ export type PracticeSqlResult = {
   truncated: boolean
 }
 
+function diagnosticRequestId(response: Response, fallback: string): string {
+  const candidate = response.headers.get('x-request-id') ?? fallback
+  return /^[\w-]{1,64}$/.test(candidate) ? candidate : fallback
+}
+
+function withDiagnosticId(message: string, requestId: string): string {
+  return `${message} (request ID: ${requestId})`
+}
+
 export async function evaluateSqlWithAi(
   input: {
     question: string
@@ -333,12 +342,18 @@ export async function requestNoteAi(
     if (timedOut) {
       console.warn(`[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=request elapsed_ms=${Date.now() - startedAt} error_category=timeout`)
       throw new Error(
-        'The AI request timed out. Your source text is unchanged; retry when the backend is available.',
+        withDiagnosticId(
+          'The AI request timed out. Your source text is unchanged; retry when the backend is available.',
+          requestId,
+        ),
       )
     }
     console.warn(`[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=request elapsed_ms=${Date.now() - startedAt} error_category=fetch_rejected origin=${origin} path=${endpoint}`)
     throw new Error(
-      'The AI service did not return a readable HTTP response. Check your connection, backend URL, browser network details, and allowed frontend origin. Your source text is unchanged.',
+      withDiagnosticId(
+        'The AI service did not return a readable HTTP response. Check your connection, backend URL, browser network details, and allowed frontend origin. Your source text is unchanged.',
+        requestId,
+      ),
     )
   }
   console.info(`[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=response status=${response.status} elapsed_ms=${Date.now() - startedAt}`)
@@ -351,21 +366,43 @@ export async function requestNoteAi(
     if (timedOut) {
       console.warn(`[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=response elapsed_ms=${Date.now() - startedAt} error_category=timeout`)
       throw new Error(
-        'The AI request timed out. Your source text is unchanged; retry when the backend is available.',
+        withDiagnosticId(
+          'The AI request timed out. Your source text is unchanged; retry when the backend is available.',
+          diagnosticRequestId(response, requestId),
+        ),
       )
     }
     if (!response.ok) {
-      throw new Error(`The AI request failed with HTTP ${response.status}. Your source text is unchanged; retry or check the backend configuration.`)
+      throw new Error(
+        withDiagnosticId(
+          `The AI request failed with HTTP ${response.status}. Your source text is unchanged; retry or check the backend configuration.`,
+          diagnosticRequestId(response, requestId),
+        ),
+      )
     }
     console.warn(`[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=response elapsed_ms=${Date.now() - startedAt} error_category=invalid_json`)
     throw new Error(
-      'The AI service returned an invalid response. Your source text is unchanged.',
+      withDiagnosticId(
+        'The AI service returned an invalid response. Your source text is unchanged.',
+        diagnosticRequestId(response, requestId),
+      ),
     )
   }
   clearTimeout(timeout)
   console.info(`[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=parse elapsed_ms=${Date.now() - startedAt}`)
 
   if (!response.ok) {
+    const backendCode =
+      typeof result === 'object' &&
+      result !== null &&
+      'error' in result &&
+      typeof result.error === 'object' &&
+      result.error !== null &&
+      'code' in result.error &&
+      typeof result.error.code === 'string' &&
+      /^[A-Z0-9_]{1,64}$/.test(result.error.code)
+        ? result.error.code
+        : undefined
     const backendMessage =
       typeof result === 'object' &&
       result !== null &&
@@ -387,8 +424,14 @@ export async function requestNoteAi(
               ? 'The AI service is rate limited. Wait a moment and retry.'
               : backendMessage ||
                 `The AI request failed (HTTP ${response.status}). Your source text is unchanged; try again.`
-    console.warn(`[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=response status=${response.status} error_category=http_error`)
-    throw new Error(message)
+    const responseRequestId = diagnosticRequestId(response, requestId)
+    console.warn(`[notes-ai] timestamp_ms=${Date.now()} request_id=${responseRequestId} operation=${operation} stage=response status=${response.status} error_category=http_error${backendCode ? ` backend_code=${backendCode}` : ''}`)
+    throw new Error(
+      withDiagnosticId(
+        backendCode ? `${message} (code: ${backendCode})` : message,
+        responseRequestId,
+      ),
+    )
   }
 
   if (
@@ -420,6 +463,9 @@ export async function requestNoteAi(
 
   console.warn(`[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=parse error_category=invalid_response`)
   throw new Error(
-    'The AI service returned an invalid response. Your source text is unchanged.',
+    withDiagnosticId(
+      'The AI service returned an invalid response. Your source text is unchanged.',
+      diagnosticRequestId(response, requestId),
+    ),
   )
 }
