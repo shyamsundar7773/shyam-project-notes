@@ -320,6 +320,8 @@ test('production AI CORS preflight and authenticated SQL and Markdown requests w
     'https://shyam-project-notes.netlify.app',
     'http://localhost:8081',
   ]
+  let sqlRequestId = ''
+  let markdownRequestId = ''
   for (const origin of origins) {
     assert.ok(config.frontendOrigins.includes(origin))
   }
@@ -327,11 +329,17 @@ test('production AI CORS preflight and authenticated SQL and Markdown requests w
     createApp(config, {
       verifyAccessToken: async (token) => token === 'verified-test-token',
       convertNotes: async () => convertedNotes,
-      evaluateSql: async () => ({
-        output: 'Illustrative rows only.',
-        evaluation: 'Review the join condition.',
-      }),
-      convertMarkdown: async () => '# Converted Markdown',
+      evaluateSql: async (_sql, _context, requestId) => {
+        sqlRequestId = requestId ?? ''
+        return {
+          output: 'Illustrative rows only.',
+          evaluation: 'Review the join condition.',
+        }
+      },
+      convertMarkdown: async (_markdown, requestId) => {
+        markdownRequestId = requestId ?? ''
+        return '# Converted Markdown'
+      },
     }),
   )
   await new Promise<void>((resolve) =>
@@ -351,14 +359,15 @@ test('production AI CORS preflight and authenticated SQL and Markdown requests w
           headers: {
             origin,
             'access-control-request-method': 'POST',
-            'access-control-request-headers': 'authorization,content-type',
+            'access-control-request-headers':
+              'authorization,content-type,x-request-id',
           },
         })
         assert.equal(preflight.status, 204)
         assert.equal(preflight.headers.get('access-control-allow-origin'), origin)
         assert.equal(
           preflight.headers.get('access-control-allow-headers')?.toLowerCase(),
-          'authorization,content-type',
+          'authorization,content-type,x-request-id',
         )
 
         const unauthenticated = await fetch(`${testBaseUrl}${path}`, {
@@ -388,16 +397,20 @@ test('production AI CORS preflight and authenticated SQL and Markdown requests w
 
     const origin = origins[0]
     assert.ok(origin)
+    const sqlCorrelationId = 'sql-request-correlation-001'
     const sqlResponse = await fetch(`${testBaseUrl}/api/notes/evaluate-sql`, {
       method: 'POST',
       headers: {
         authorization: 'Bearer verified-test-token',
         'content-type': 'application/json',
+        'x-request-id': sqlCorrelationId,
         origin,
       },
       body: JSON.stringify({ sql: 'SELECT * FROM example_table;' }),
     })
     assert.equal(sqlResponse.status, 200)
+    assert.equal(sqlResponse.headers.get('x-request-id'), sqlCorrelationId)
+    assert.equal(sqlRequestId, sqlCorrelationId)
     assert.equal(sqlResponse.headers.get('access-control-allow-origin'), origin)
     assert.deepEqual(await sqlResponse.json(), {
       output: 'Illustrative rows only.',
@@ -411,12 +424,18 @@ test('production AI CORS preflight and authenticated SQL and Markdown requests w
         headers: {
           authorization: 'Bearer verified-test-token',
           'content-type': 'application/json',
+          'x-request-id': 'markdown-request-correlation-002',
           origin,
         },
         body: JSON.stringify({ markdown: '# Raw source' }),
       },
     )
     assert.equal(markdownResponse.status, 200)
+    assert.equal(
+      markdownResponse.headers.get('x-request-id'),
+      'markdown-request-correlation-002',
+    )
+    assert.equal(markdownRequestId, 'markdown-request-correlation-002')
     assert.equal(
       markdownResponse.headers.get('access-control-allow-origin'),
       origin,
@@ -427,6 +446,65 @@ test('production AI CORS preflight and authenticated SQL and Markdown requests w
   } finally {
     await new Promise<void>((resolve, reject) =>
       testServer.close((error) => (error ? reject(error) : resolve())),
+    )
+  }
+})
+
+test('correlated AI diagnostics trace the request without logging credentials or source', async () => {
+  const correlationId = 'safe-request-correlation-003'
+  const testToken = 'do-not-log-auth-token'
+  const source = 'do-not-log-private-sql'
+  const lines: string[] = []
+  const originalInfo = console.info
+  const originalWarn = console.warn
+  let providerRequestId = ''
+  console.info = (...values: unknown[]) => lines.push(values.join(' '))
+  console.warn = (...values: unknown[]) => lines.push(values.join(' '))
+
+  const diagnosticServer = createServer(
+    createApp(config, {
+      verifyAccessToken: async (token) => token === testToken,
+      convertNotes: async () => convertedNotes,
+      evaluateSql: async (_sql, _context, requestId) => {
+        providerRequestId = requestId ?? ''
+        return { output: 'Safe result', evaluation: 'Safe evaluation' }
+      },
+    }),
+  )
+  await new Promise<void>((resolve) =>
+    diagnosticServer.listen(0, '127.0.0.1', resolve),
+  )
+  const address = diagnosticServer.address() as AddressInfo
+
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/api/notes/evaluate-sql`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${testToken}`,
+          'content-type': 'application/json',
+          'x-request-id': correlationId,
+          origin: 'http://localhost:5173',
+        },
+        body: JSON.stringify({ sql: source }),
+      },
+    )
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('x-request-id'), correlationId)
+    assert.equal(providerRequestId, correlationId)
+    assert.ok(lines.some((line) => line.includes('stage=request_received')))
+    assert.ok(lines.some((line) => line.includes('stage=validation result=passed')))
+    assert.ok(lines.some((line) => line.includes('result=passed')))
+    assert.ok(lines.some((line) => line.includes('stage=gemini_configuration')))
+    assert.ok(lines.some((line) => line.includes('stage=response status=200')))
+    assert.ok(lines.every((line) => !line.includes(testToken)))
+    assert.ok(lines.every((line) => !line.includes(source)))
+  } finally {
+    console.info = originalInfo
+    console.warn = originalWarn
+    await new Promise<void>((resolve, reject) =>
+      diagnosticServer.close((error) => (error ? reject(error) : resolve())),
     )
   }
 })

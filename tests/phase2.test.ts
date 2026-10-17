@@ -791,6 +791,7 @@ test('Markdown conversion accepts a valid Gemini response and keeps the call ser
   let target = ''
   let body = ''
   let authorization = ''
+  let requestId = ''
   const result = await requestNoteAi(
     {
       kind: 'markdown',
@@ -803,6 +804,7 @@ test('Markdown conversion accepts a valid Gemini response and keeps the call ser
         target = String(input)
         body = String(init?.body)
         authorization = new Headers(init?.headers).get('authorization') ?? ''
+        requestId = new Headers(init?.headers).get('x-request-id') ?? ''
         return Response.json({ convertedMarkdown: '# Improved notes' })
       },
     },
@@ -810,6 +812,7 @@ test('Markdown conversion accepts a valid Gemini response and keeps the call ser
   assert.deepEqual(result, { convertedMarkdown: '# Improved notes' })
   assert.equal(target, 'https://api.example.test/api/notes/convert-markdown')
   assert.deepEqual(JSON.parse(body), { markdown: '# Source' })
+  assert.match(requestId, /^[\w-]{1,64}$/)
   assert.equal(authorization, 'Bearer test-access-token')
 })
 
@@ -927,7 +930,7 @@ test('AI request reports missing backend configuration and network failures', as
         },
       },
     ),
-    /did not return an HTTP response.*CORS/i,
+    /did not return a readable HTTP response/i,
   )
 })
 
@@ -1044,6 +1047,7 @@ test('AI requests send only the expected source and bearer auth, with safe failu
   let requestedUrl = ''
   let requestedBody = ''
   let requestedAuthorization = ''
+  let requestId = ''
   const result = await requestNoteAi(
     {
       kind: 'sql',
@@ -1056,6 +1060,7 @@ test('AI requests send only the expected source and bearer auth, with safe failu
         requestedUrl = String(input)
         requestedBody = String(init?.body)
         requestedAuthorization = new Headers(init?.headers).get('authorization') ?? ''
+        requestId = new Headers(init?.headers).get('x-request-id') ?? ''
         return new Response(
           JSON.stringify({ output: 'Illustrative', evaluation: 'Review' }),
           { status: 200, headers: { 'content-type': 'application/json' } },
@@ -1069,6 +1074,7 @@ test('AI requests send only the expected source and bearer auth, with safe failu
   })
   assert.equal(requestedUrl, 'https://api.example.test/api/notes/evaluate-sql')
   assert.deepEqual(JSON.parse(requestedBody), { sql: 'SELECT 1;' })
+  assert.match(requestId, /^[\w-]{1,64}$/)
   assert.equal(requestedAuthorization, 'Bearer test-access-token')
 
   await assert.rejects(

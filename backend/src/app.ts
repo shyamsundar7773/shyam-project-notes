@@ -1,4 +1,5 @@
 import cors from 'cors'
+import { randomUUID } from 'node:crypto'
 import express, {
   type ErrorRequestHandler,
   type Request,
@@ -29,8 +30,27 @@ export type ApiProviders = {
   evaluateSql?: (
     sql: string,
     context?: { question: string; result: string },
+    requestId?: string,
   ) => Promise<ReturnType<typeof parseSqlEvaluation>>
-  convertMarkdown?: (markdown: string) => Promise<string>
+  convertMarkdown?: (markdown: string, requestId?: string) => Promise<string>
+}
+
+function requestId(response: Response): string {
+  return response.locals.requestId as string
+}
+
+function logAuthStage(
+  response: Response,
+  result: 'passed' | 'rejected' | 'unavailable',
+  errorCategory?: string,
+): void {
+  const id = response.locals.requestId
+  if (typeof id !== 'string') return
+  const category = errorCategory ? ` error_category=${errorCategory}` : ''
+  const write = result === 'passed' ? console.info : console.warn
+  write(
+    `[notes-ai] timestamp_ms=${Date.now()} stage=backend-auth request_id=${id} operation=${response.locals.operation} result=${result}${category}`,
+  )
 }
 
 function sendError(
@@ -55,6 +75,7 @@ async function authorizeRequest(
   config: ServerConfig,
 ): Promise<boolean> {
   if (!hasSupabaseAuthConfiguration(config)) {
+    logAuthStage(response, 'rejected', 'auth_not_configured')
     sendError(
       response,
       503,
@@ -66,6 +87,7 @@ async function authorizeRequest(
 
   const token = bearerToken(request)
   if (!token) {
+    logAuthStage(response, 'rejected', 'missing_bearer_token')
     sendError(
       response,
       401,
@@ -77,6 +99,7 @@ async function authorizeRequest(
 
   try {
     if (!(await providers.verifyAccessToken(token))) {
+      logAuthStage(response, 'rejected', 'invalid_bearer_token')
       sendError(
         response,
         401,
@@ -86,6 +109,7 @@ async function authorizeRequest(
       return false
     }
   } catch {
+    logAuthStage(response, 'unavailable', 'auth_provider')
     sendError(
       response,
       503,
@@ -95,6 +119,7 @@ async function authorizeRequest(
     return false
   }
 
+  logAuthStage(response, 'passed')
   return true
 }
 
@@ -154,14 +179,6 @@ export function createApp(
 ): express.Express {
   const app = express()
 
-  app.use(
-    cors({
-      origin: (origin, callback) => {
-        callback(null, Boolean(origin && config.frontendOrigins.includes(origin)))
-      },
-    }),
-  )
-  app.use(express.json({ limit: '512kb', strict: true }))
   app.use((request, response, next) => {
     const operation =
       request.path === '/api/notes/evaluate-sql'
@@ -171,15 +188,38 @@ export function createApp(
           : null
     if (operation) {
       const startedAt = Date.now()
-      console.info(`[notes-ai] route reached operation=${operation}`)
+      const suppliedId = request.header('x-request-id')
+      const id =
+        suppliedId && /^[\w-]{1,64}$/.test(suppliedId)
+          ? suppliedId
+          : randomUUID()
+      response.locals.requestId = id
+      response.locals.operation = operation
+      response.setHeader('X-Request-Id', id)
+      const requestStage =
+        request.method === 'OPTIONS' ? 'preflight_received' : 'request_received'
+      const responseStage =
+        request.method === 'OPTIONS' ? 'preflight_response' : 'response'
+      console.info(
+        `[notes-ai] timestamp_ms=${Date.now()} request_id=${id} operation=${operation} stage=${requestStage} origin=${request.header('origin') ?? 'none'} path=${request.path}`,
+      )
       response.once('finish', () => {
         console.info(
-          `[notes-ai] route response operation=${operation} status=${response.statusCode} elapsed_ms=${Date.now() - startedAt}`,
+          `[notes-ai] timestamp_ms=${Date.now()} request_id=${id} operation=${operation} stage=${responseStage} status=${response.statusCode} elapsed_ms=${Date.now() - startedAt}`,
         )
       })
     }
     next()
   })
+  app.use(
+    cors({
+      origin: (origin, callback) => {
+        callback(null, Boolean(origin && config.frontendOrigins.includes(origin)))
+      },
+      exposedHeaders: ['X-Request-Id'],
+    }),
+  )
+  app.use(express.json({ limit: '512kb', strict: true }))
 
   app.get('/health', (_request, response) => {
     response.json({ status: 'ok' })
@@ -222,6 +262,9 @@ export function createApp(
   app.post('/api/notes/evaluate-sql', async (request, response) => {
     const sql = validateAiText(request.body, 'sql')
     if (sql === null) {
+      console.warn(
+        `[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId(response)} operation=sql-evaluation stage=validation result=rejected`,
+      )
       sendError(
         response,
         400,
@@ -230,10 +273,16 @@ export function createApp(
       )
       return
     }
+    console.info(
+      `[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId(response)} operation=sql-evaluation stage=validation result=passed`,
+    )
 
     if (!(await authorizeRequest(request, response, providers, config))) {
       return
     }
+    console.info(
+      `[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId(response)} operation=sql-evaluation stage=gemini_configuration configured=${Boolean(config.geminiApiKey && config.geminiPrimaryModel)}`,
+    )
     if (!config.geminiApiKey || !config.geminiPrimaryModel) {
       sendError(
         response,
@@ -268,6 +317,7 @@ export function createApp(
         question && executionResult
           ? { question, result: executionResult }
           : undefined,
+        requestId(response),
       )
       response.json({ output: result.output, evaluation: result.evaluation })
     } catch (error) {
@@ -308,6 +358,9 @@ export function createApp(
   app.post('/api/notes/convert-markdown', async (request, response) => {
     const markdown = validateAiText(request.body, 'markdown')
     if (markdown === null) {
+      console.warn(
+        `[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId(response)} operation=markdown-conversion stage=validation result=rejected`,
+      )
       sendError(
         response,
         400,
@@ -316,10 +369,16 @@ export function createApp(
       )
       return
     }
+    console.info(
+      `[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId(response)} operation=markdown-conversion stage=validation result=passed`,
+    )
 
     if (!(await authorizeRequest(request, response, providers, config))) {
       return
     }
+    console.info(
+      `[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId(response)} operation=markdown-conversion stage=gemini_configuration configured=${Boolean(config.geminiApiKey && config.geminiPrimaryModel)}`,
+    )
     if (!config.geminiApiKey || !config.geminiPrimaryModel) {
       sendError(
         response,
@@ -341,7 +400,7 @@ export function createApp(
 
     try {
       const convertedMarkdown = parseMarkdownConversion(
-        await providers.convertMarkdown(markdown),
+        await providers.convertMarkdown(markdown, requestId(response)),
       )
       response.json({ convertedMarkdown })
     } catch (error) {

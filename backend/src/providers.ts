@@ -11,20 +11,41 @@ import { parseConvertedNotes } from './notes.js'
 
 async function withGeminiDiagnostics<T>(
   operation: string,
+  requestId: string,
   request: () => Promise<T>,
 ): Promise<T> {
   const startedAt = Date.now()
-  console.info(`[notes-ai] Gemini request started operation=${operation}`)
+  console.info(
+    `[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=gemini_request elapsed_ms=0`,
+  )
   try {
     const result = await request()
     console.info(
-      `[notes-ai] Gemini request completed operation=${operation} elapsed_ms=${Date.now() - startedAt}`,
+      `[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=gemini_response result=received elapsed_ms=${Date.now() - startedAt}`,
     )
     return result
   } catch (error) {
-    const kind = error instanceof Error ? error.name : 'UnknownError'
+    const status =
+      typeof error === 'object' &&
+      error !== null &&
+      'status' in error &&
+      typeof error.status === 'number'
+        ? error.status
+        : undefined
+    const category =
+      status === 401 || status === 403
+        ? 'provider_auth'
+        : status === 429
+          ? 'provider_rate_limit'
+          : status !== undefined
+            ? `provider_http_${status}`
+            : error instanceof TypeError
+              ? 'provider_network'
+              : error instanceof Error && error.name === 'TimeoutError'
+                ? 'provider_timeout'
+                : 'provider_error'
     console.warn(
-      `[notes-ai] Gemini request failed operation=${operation} elapsed_ms=${Date.now() - startedAt} error_kind=${kind}`,
+      `[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=gemini_response elapsed_ms=${Date.now() - startedAt} error_category=${category}`,
     )
     throw error
   }
@@ -65,7 +86,7 @@ export function createProviders(config: ServerConfig): ApiProviders {
         httpOptions: { timeout: 30_000 },
       }))
 
-      const response = await withGeminiDiagnostics('notes-conversion', () =>
+      const response = await withGeminiDiagnostics('notes-conversion', 'untracked', () =>
         model.models.generateContent({
           model: config.geminiPrimaryModel,
           contents: [
@@ -99,13 +120,13 @@ export function createProviders(config: ServerConfig): ApiProviders {
       }
     },
 
-    async evaluateSql(sql, context) {
+    async evaluateSql(sql, context, requestId = 'untracked') {
       const model = (gemini ??= new GoogleGenAI({
         apiKey: config.geminiApiKey,
         httpOptions: { timeout: 30_000 },
       }))
 
-      const response = await withGeminiDiagnostics('sql-evaluation', () =>
+      const response = await withGeminiDiagnostics('sql-evaluation', requestId, () =>
         model.models.generateContent({
           model: config.geminiPrimaryModel,
           contents: [
@@ -132,6 +153,9 @@ export function createProviders(config: ServerConfig): ApiProviders {
       )
 
       if (!response.text) {
+        console.warn(
+          `[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=sql-evaluation stage=parse error_category=empty_provider_output`,
+        )
         throw new ConversionError(
           502,
           'INVALID_PROVIDER_RESPONSE',
@@ -139,8 +163,15 @@ export function createProviders(config: ServerConfig): ApiProviders {
         )
       }
       try {
-        return parseSqlEvaluation(response.text)
+        const result = parseSqlEvaluation(response.text)
+        console.info(
+          `[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=sql-evaluation stage=parse result=valid`,
+        )
+        return result
       } catch {
+        console.warn(
+          `[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=sql-evaluation stage=parse error_category=invalid_provider_output`,
+        )
         throw new ConversionError(
           502,
           'INVALID_PROVIDER_RESPONSE',
@@ -149,13 +180,13 @@ export function createProviders(config: ServerConfig): ApiProviders {
       }
     },
 
-    async convertMarkdown(markdown) {
+    async convertMarkdown(markdown, requestId = 'untracked') {
       const model = (gemini ??= new GoogleGenAI({
         apiKey: config.geminiApiKey,
         httpOptions: { timeout: 30_000 },
       }))
 
-      const response = await withGeminiDiagnostics('markdown-conversion', () =>
+      const response = await withGeminiDiagnostics('markdown-conversion', requestId, () =>
         model.models.generateContent({
           model: config.geminiPrimaryModel,
           contents: [
@@ -170,6 +201,9 @@ export function createProviders(config: ServerConfig): ApiProviders {
       )
 
       if (!response.text) {
+        console.warn(
+          `[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=markdown-conversion stage=parse error_category=empty_provider_output`,
+        )
         throw new ConversionError(
           502,
           'INVALID_PROVIDER_RESPONSE',
@@ -177,8 +211,15 @@ export function createProviders(config: ServerConfig): ApiProviders {
         )
       }
       try {
-        return parseMarkdownConversion(response.text)
+        const converted = parseMarkdownConversion(response.text)
+        console.info(
+          `[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=markdown-conversion stage=parse result=valid`,
+        )
+        return converted
       } catch {
+        console.warn(
+          `[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=markdown-conversion stage=parse error_category=invalid_provider_output`,
+        )
         throw new ConversionError(
           502,
           'INVALID_PROVIDER_RESPONSE',

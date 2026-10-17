@@ -265,6 +265,22 @@ export async function requestNoteAi(
     timeoutMs?: number
   },
 ): Promise<SqlAiResult | MarkdownAiResult> {
+  const endpoint =
+    request.kind === 'sql'
+      ? '/api/notes/evaluate-sql'
+      : '/api/notes/convert-markdown'
+  const operation =
+    request.kind === 'sql' ? 'sql-evaluation' : 'markdown-conversion'
+  const requestId =
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  const startedAt = Date.now()
+  const origin =
+    typeof window === 'undefined' ? 'non-browser' : window.location.origin
+  console.info(
+    `[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=session elapsed_ms=0 result=${request.accessToken.trim() ? 'available' : 'missing'}`,
+  )
+
   const baseUrl = options.baseUrl.trim().replace(/\/+$/, '')
   if (!baseUrl) {
     throw new Error(
@@ -274,15 +290,9 @@ export async function requestNoteAi(
   if (!request.accessToken.trim()) {
     throw new Error('Your sign-in session has expired. Sign in again and retry.')
   }
-
-  const endpoint =
-    request.kind === 'sql'
-      ? '/api/notes/evaluate-sql'
-      : '/api/notes/convert-markdown'
-  const operation =
-    request.kind === 'sql' ? 'sql-evaluation' : 'markdown-conversion'
-  const startedAt = Date.now()
-  console.info(`[notes-ai] request started operation=${operation}`)
+  console.info(
+    `[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=request elapsed_ms=${Date.now() - startedAt} origin=${origin} path=${endpoint}`,
+  )
   const body =
     request.kind === 'sql'
       ? {
@@ -311,6 +321,7 @@ export async function requestNoteAi(
         headers: {
           authorization: `Bearer ${request.accessToken}`,
           'content-type': 'application/json',
+          'x-request-id': requestId,
         },
         body: JSON.stringify(body),
         signal: controller.signal,
@@ -320,17 +331,17 @@ export async function requestNoteAi(
   } catch {
     clearTimeout(timeout)
     if (timedOut) {
-      console.warn(`[notes-ai] request failed operation=${operation} stage=fetch elapsed_ms=${Date.now() - startedAt} error_category=timeout`)
+      console.warn(`[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=request elapsed_ms=${Date.now() - startedAt} error_category=timeout`)
       throw new Error(
         'The AI request timed out. Your source text is unchanged; retry when the backend is available.',
       )
     }
-    console.warn(`[notes-ai] request failed operation=${operation} stage=fetch elapsed_ms=${Date.now() - startedAt} error_category=network_or_cors`)
+    console.warn(`[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=request elapsed_ms=${Date.now() - startedAt} error_category=fetch_rejected origin=${origin} path=${endpoint}`)
     throw new Error(
-      'The AI service did not return an HTTP response. Check your connection and backend URL; in a web browser, verify the backend allows this exact frontend origin (CORS). Your source text is unchanged.',
+      'The AI service did not return a readable HTTP response. Check your connection, backend URL, browser network details, and allowed frontend origin. Your source text is unchanged.',
     )
   }
-  console.info(`[notes-ai] backend response operation=${operation} status=${response.status} elapsed_ms=${Date.now() - startedAt}`)
+  console.info(`[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=response status=${response.status} elapsed_ms=${Date.now() - startedAt}`)
 
   let result: unknown
   try {
@@ -338,7 +349,7 @@ export async function requestNoteAi(
   } catch {
     clearTimeout(timeout)
     if (timedOut) {
-      console.warn(`[notes-ai] request failed operation=${operation} stage=response elapsed_ms=${Date.now() - startedAt} error_category=timeout`)
+      console.warn(`[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=response elapsed_ms=${Date.now() - startedAt} error_category=timeout`)
       throw new Error(
         'The AI request timed out. Your source text is unchanged; retry when the backend is available.',
       )
@@ -346,13 +357,13 @@ export async function requestNoteAi(
     if (!response.ok) {
       throw new Error(`The AI request failed with HTTP ${response.status}. Your source text is unchanged; retry or check the backend configuration.`)
     }
-    console.warn(`[notes-ai] request failed operation=${operation} stage=response elapsed_ms=${Date.now() - startedAt} error_category=malformed_response`)
+    console.warn(`[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=response elapsed_ms=${Date.now() - startedAt} error_category=invalid_json`)
     throw new Error(
       'The AI service returned an invalid response. Your source text is unchanged.',
     )
   }
   clearTimeout(timeout)
-  console.info(`[notes-ai] response parsed operation=${operation} elapsed_ms=${Date.now() - startedAt}`)
+  console.info(`[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=parse elapsed_ms=${Date.now() - startedAt}`)
 
   if (!response.ok) {
     const backendMessage =
@@ -376,6 +387,7 @@ export async function requestNoteAi(
               ? 'The AI service is rate limited. Wait a moment and retry.'
               : backendMessage ||
                 `The AI request failed (HTTP ${response.status}). Your source text is unchanged; try again.`
+    console.warn(`[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=response status=${response.status} error_category=http_error`)
     throw new Error(message)
   }
 
@@ -388,6 +400,7 @@ export async function requestNoteAi(
     'evaluation' in result &&
     typeof result.evaluation === 'string'
   ) {
+    console.info(`[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=parse result=valid`)
     return {
       output: result.output,
       evaluation: result.evaluation,
@@ -401,9 +414,11 @@ export async function requestNoteAi(
     'convertedMarkdown' in result &&
     typeof result.convertedMarkdown === 'string'
   ) {
+    console.info(`[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=parse result=valid`)
     return { convertedMarkdown: result.convertedMarkdown }
   }
 
+  console.warn(`[notes-ai] timestamp_ms=${Date.now()} request_id=${requestId} operation=${operation} stage=parse error_category=invalid_response`)
   throw new Error(
     'The AI service returned an invalid response. Your source text is unchanged.',
   )
