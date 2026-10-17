@@ -4,10 +4,14 @@
   "version": "0.0.0",
   "type": "module",
   "main": "expo-router/entry",
+  "engines": {
+    "node": ">=24.10.0"
+  },
   "scripts": {
-    "start": "node scripts/start-expo.mjs",
+    "start": "node scripts/start.mjs",
+    "start:expo": "node scripts/start-expo.mjs",
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && npm --prefix backend run build",
     "build:expo:web": "expo export --platform web --output-dir expo-web-build",
     "lint": "eslint .",
     "preview": "vite preview",

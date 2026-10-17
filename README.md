@@ -217,17 +217,26 @@ From `backend/`, run `npm run build` and `npm test`.
 - `npm run build` runs the TypeScript project build and creates the production
   site in `dist/`.
 - `npm run preview` serves the production build locally.
+- `npm start` starts Expo for local development when `PORT` is unset; when
+  `PORT` is supplied by Render, it starts the compiled Express backend.
+  `npm run build` compiles both the Vite frontend and `backend/dist/server.js`.
+- For the existing Render service rooted at the repository root, keep the
+  build command `npm install && npm run build`, start command `npm start`, and
+  health-check path `/health`. Render's `PORT` selects the Express server;
+  without `PORT`, `npm start` preserves the local Expo workflow. The root
+  package requires Node `>=24.10.0`, matching the backend runtime.
 - `netlify.toml` configures the build command, output directory, and SPA
   fallback for Netlify.
 - In Netlify's production environment, set `VITE_BACKEND_URL` to the Render
   backend origin and rebuild the frontend after changing it. This public
   frontend setting contains no secret; Vite embeds it in the build.
-- For a separate Render backend service, set the root directory to `backend`,
-  build command to `npm ci && npm run build`, start command to
-  `npm start`, and health-check path to `/health`. In Render Dashboard → Service
-  → Environment, configure `GEMINI_API_KEY`, `GEMINI_PRIMARY_MODEL`,
-  `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, and `FRONTEND_ORIGIN`. Render
-  provides `PORT`; do not hard-code or copy a local port into the production
-  service. Set `FRONTEND_ORIGIN` to the exact origin of the deployed frontend
-  only after that URL is known. No production frontend or Render service URL
-  has been verified, and this repository does not change Render settings.
+- Alternatively, for a separately rooted Render backend service, set the
+  root directory to `backend`, build command to `npm ci && npm run build`,
+  start command to `npm start`, and health-check path to `/health`. In Render
+  Dashboard → Service → Environment, configure `GEMINI_API_KEY`,
+  `GEMINI_PRIMARY_MODEL`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, and
+  `FRONTEND_ORIGIN`. Render provides `PORT`; do not hard-code or copy a local
+  port into the production service. Set `FRONTEND_ORIGIN` to the exact origin
+  of the deployed frontend only after that URL is known. No production
+  frontend or Render service URL has been verified, and this repository does
+  not change Render settings.
