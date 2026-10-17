@@ -8,7 +8,10 @@ export type ServerConfig = {
   frontendOrigins: string[]
 }
 
-const defaultFrontendOrigins = ['https://shyam-project-notes.netlify.app']
+const defaultFrontendOrigins = [
+  'https://shyam-project-notes.netlify.app',
+  'http://localhost:8081',
+]
 
 function parseFrontendOrigins(value: string | undefined): string[] {
   return [

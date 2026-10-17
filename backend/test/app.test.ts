@@ -281,6 +281,7 @@ test('CORS accepts an explicit comma-separated origin allowlist only', async () 
   })
   assert.deepEqual(lanConfig.frontendOrigins, [
     'https://shyam-project-notes.netlify.app',
+    'http://localhost:8081',
     'http://localhost:5173',
     'http://192.168.1.20:5173',
     'https://unrelated.example',
@@ -315,8 +316,13 @@ test('CORS accepts an explicit comma-separated origin allowlist only', async () 
 })
 
 test('production AI CORS preflight and authenticated SQL and Markdown requests work', async () => {
-  const origin = 'https://shyam-project-notes.netlify.app'
-  assert.ok(config.frontendOrigins.includes(origin))
+  const origins = [
+    'https://shyam-project-notes.netlify.app',
+    'http://localhost:8081',
+  ]
+  for (const origin of origins) {
+    assert.ok(config.frontendOrigins.includes(origin))
+  }
   const testServer = createServer(
     createApp(config, {
       verifyAccessToken: async (token) => token === 'verified-test-token',
@@ -335,30 +341,53 @@ test('production AI CORS preflight and authenticated SQL and Markdown requests w
   const testBaseUrl = `http://127.0.0.1:${address.port}`
 
   try {
-    for (const path of [
-      '/api/notes/evaluate-sql',
-      '/api/notes/convert-markdown',
-    ]) {
-      const preflight = await fetch(`${testBaseUrl}${path}`, {
-        method: 'OPTIONS',
-        headers: {
+    for (const origin of origins) {
+      for (const path of [
+        '/api/notes/evaluate-sql',
+        '/api/notes/convert-markdown',
+      ]) {
+        const preflight = await fetch(`${testBaseUrl}${path}`, {
+          method: 'OPTIONS',
+          headers: {
+            origin,
+            'access-control-request-method': 'POST',
+            'access-control-request-headers': 'authorization,content-type',
+          },
+        })
+        assert.equal(preflight.status, 204)
+        assert.equal(preflight.headers.get('access-control-allow-origin'), origin)
+        assert.equal(
+          preflight.headers.get('access-control-allow-headers')?.toLowerCase(),
+          'authorization,content-type',
+        )
+
+        const unauthenticated = await fetch(`${testBaseUrl}${path}`, {
+          method: 'POST',
+          headers: {
+            origin,
+            'content-type': 'application/json',
+          },
+          body:
+            path === '/api/notes/evaluate-sql'
+              ? JSON.stringify({ sql: 'SELECT 1' })
+              : JSON.stringify({ markdown: '# Safe diagnostic' }),
+        })
+        assert.equal(unauthenticated.status, 401)
+        assert.equal(
+          unauthenticated.headers.get('access-control-allow-origin'),
           origin,
-          'access-control-request-method': 'POST',
-          'access-control-request-headers': 'authorization,content-type',
-        },
-      })
-      assert.equal(preflight.status, 204)
-      assert.equal(preflight.headers.get('access-control-allow-origin'), origin)
-      assert.match(
-        preflight.headers.get('access-control-allow-headers') ?? '',
-        /authorization/i,
-      )
-      assert.match(
-        preflight.headers.get('access-control-allow-headers') ?? '',
-        /content-type/i,
-      )
+        )
+        assert.deepEqual(await unauthenticated.json(), {
+          error: {
+            code: 'UNAUTHENTICATED',
+            message: 'A valid bearer access token is required.',
+          },
+        })
+      }
     }
 
+    const origin = origins[0]
+    assert.ok(origin)
     const sqlResponse = await fetch(`${testBaseUrl}/api/notes/evaluate-sql`, {
       method: 'POST',
       headers: {
