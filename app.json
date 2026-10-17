@@ -1,0 +1,21 @@
+{
+  "expo": {
+    "name": "Shyam Project Notes",
+    "slug": "shyam-project-notes",
+    "scheme": "shyam-project-notes",
+    "version": "1.0.0",
+    "orientation": "default",
+    "userInterfaceStyle": "light",
+    "plugins": [
+      "expo-router",
+      "expo-status-bar"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static"
+    }
+  }
+}

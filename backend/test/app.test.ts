@@ -3,6 +3,11 @@ import { after, before, test } from 'node:test'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { createApp, type ApiProviders } from '../src/app.js'
+import {
+  parseMarkdownConversion,
+  parseSqlEvaluation,
+  validateAiText,
+} from '../src/ai-notes.js'
 import { parseConfig } from '../src/config.js'
 import type { ConvertedNotes } from '../src/notes.js'
 
@@ -25,9 +30,20 @@ let server: Server
 let baseUrl: string
 let verifyCalls = 0
 let conversionCalls = 0
+let sqlEvaluationCalls = 0
+let markdownConversionCalls = 0
 let convertImplementation: ApiProviders['convertNotes'] = async () =>
   convertedNotes
 let verifyImplementation: ApiProviders['verifyAccessToken'] = async () => true
+let sqlEvaluationImplementation: NonNullable<
+  ApiProviders['evaluateSql']
+> = async () => ({
+  output: 'Illustrative rows only.',
+  evaluation: 'Review the join condition.',
+})
+let markdownConversionImplementation: NonNullable<
+  ApiProviders['convertMarkdown']
+> = async () => '# Converted Markdown'
 
 before(async () => {
   const app = createApp(config, {
@@ -38,6 +54,14 @@ before(async () => {
     convertNotes: (text) => {
       conversionCalls += 1
       return convertImplementation(text)
+    },
+    evaluateSql: (sql, context) => {
+      sqlEvaluationCalls += 1
+      return sqlEvaluationImplementation(sql, context)
+    },
+    convertMarkdown: (markdown) => {
+      markdownConversionCalls += 1
+      return markdownConversionImplementation(markdown)
     },
   })
 
@@ -247,4 +271,238 @@ test('CORS allows the configured local frontend origin only', async () => {
     headers: { origin: 'http://localhost:4173' },
   })
   assert.equal(blocked.headers.get('access-control-allow-origin'), null)
+})
+
+test('CORS accepts an explicit comma-separated origin allowlist only', async () => {
+  const lanConfig = parseConfig({
+    ...config,
+    FRONTEND_ORIGIN:
+      'http://localhost:5173, http://192.168.1.20:5173, https://unrelated.example',
+  })
+  assert.deepEqual(lanConfig.frontendOrigins, [
+    'http://localhost:5173',
+    'http://192.168.1.20:5173',
+    'https://unrelated.example',
+  ])
+
+  const lanServer = createServer(
+    createApp(lanConfig, {
+      verifyAccessToken: async () => true,
+      convertNotes: async () => convertedNotes,
+    }),
+  )
+  await new Promise<void>((resolve) =>
+    lanServer.listen(0, '127.0.0.1', resolve),
+  )
+  const address = lanServer.address() as AddressInfo
+  try {
+    const allowed = await fetch(`http://127.0.0.1:${address.port}/health`, {
+      headers: { origin: 'http://192.168.1.20:5173' },
+    })
+    assert.equal(
+      allowed.headers.get('access-control-allow-origin'),
+      'http://192.168.1.20:5173',
+    )
+    const rejected = await fetch(`http://127.0.0.1:${address.port}/health`, {
+      headers: { origin: 'http://192.168.1.21:5173' },
+    })
+    assert.equal(rejected.headers.get('access-control-allow-origin'), null)
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      lanServer.close((error) => (error ? reject(error) : resolve())),
+    )
+  }
+})
+
+test('validates and evaluates SQL only after token verification', async () => {
+  assert.equal(validateAiText({ sql: 'SELECT 1' }, 'sql'), 'SELECT 1')
+  assert.equal(validateAiText({ sql: ' ' }, 'sql'), null)
+  assert.equal(validateAiText({ sql: 12 }, 'sql'), null)
+
+  const missing = await fetch(`${baseUrl}/api/notes/evaluate-sql`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  assert.equal(missing.status, 400)
+
+  verifyImplementation = async () => false
+  const rejected = await fetch(`${baseUrl}/api/notes/evaluate-sql`, {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer invalid-token',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ sql: 'SELECT 1' }),
+  })
+  assert.equal(rejected.status, 401)
+  const before = sqlEvaluationCalls
+  assert.equal(sqlEvaluationCalls, before)
+
+  verifyImplementation = async () => true
+  const response = await fetch(`${baseUrl}/api/notes/evaluate-sql`, {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer valid-test-token',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ sql: 'SELECT * FROM example_table;' }),
+  })
+  assert.equal(response.status, 200)
+  assert.deepEqual(await response.json(), {
+    output: 'Illustrative rows only.',
+    evaluation: 'Review the join condition.',
+  })
+  assert.equal(sqlEvaluationCalls, before + 1)
+})
+
+test('rejects malformed practice SQL and requires authentication for practice questions', async () => {
+  verifyImplementation = async () => true
+  const malformed = await fetch(`${baseUrl}/api/notes/run-sql`, {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer verified-test-token',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ sql: 'SELECT FROM employees' }),
+  })
+  assert.equal(malformed.status, 400)
+  assert.equal((await malformed.json()).error.code, 'SQL_EXECUTION_FAILED')
+
+  verifyImplementation = async () => false
+  const unauthenticated = await fetch(
+    `${baseUrl}/api/notes/practice-question`,
+  )
+  assert.equal(unauthenticated.status, 401)
+  verifyImplementation = async () => true
+})
+
+test('keeps Gemini evaluation separate and returns safe errors on evaluation failure', async () => {
+  let submittedSql = ''
+  let submittedContext: { question: string; result: string } | undefined
+  sqlEvaluationImplementation = async (sql, context) => {
+    submittedSql = sql
+    submittedContext = context
+    throw new Error('private Gemini failure detail')
+  }
+  const response = await fetch(`${baseUrl}/api/notes/evaluate-sql`, {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer verified-test-token',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      sql: 'SELECT name FROM employees',
+      question: 'List employee names.',
+      executionResult: '{"rows":[{"name":"Asha"}]}',
+    }),
+  })
+  const body = await response.text()
+  assert.equal(response.status, 502)
+  assert.equal(body.includes('private Gemini failure detail'), false)
+  assert.equal(submittedSql, 'SELECT name FROM employees')
+  assert.deepEqual(submittedContext, {
+    question: 'List employee names.',
+    result: '{"rows":[{"name":"Asha"}]}',
+  })
+  sqlEvaluationImplementation = async () => ({
+    output: 'Illustrative rows only.',
+    evaluation: 'Review the join condition.',
+  })
+})
+
+test('serves practice questions and runs sandbox SQL only for verified users', async () => {
+  const headers = {
+    authorization: 'Bearer verified-test-token',
+    'content-type': 'application/json',
+  }
+  const question = await fetch(`${baseUrl}/api/notes/practice-question`, {
+    headers,
+  })
+  assert.equal(question.status, 200)
+  const questionBody = (await question.json()) as { prompt: string; schema: string[] }
+  assert.match(questionBody.prompt, /employees/i)
+  assert.ok(questionBody.schema.some((table) => table.startsWith('employees(')))
+
+  const execution = await fetch(`${baseUrl}/api/notes/run-sql`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      sql: 'SELECT name FROM employees ORDER BY id LIMIT 2',
+    }),
+  })
+  assert.equal(execution.status, 200)
+  assert.deepEqual(await execution.json(), {
+    columns: ['name'],
+    rows: [{ name: 'Asha' }, { name: 'Ben' }],
+    rowLimit: 200,
+    truncated: false,
+  })
+
+  verifyImplementation = async () => false
+  const rejected = await fetch(`${baseUrl}/api/notes/run-sql`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ sql: 'SELECT name FROM employees' }),
+  })
+  assert.equal(rejected.status, 401)
+  verifyImplementation = async () => true
+})
+
+test('converts Markdown with safe errors and preserves source-side failure details', async () => {
+  assert.equal(
+    validateAiText({ markdown: '# Notes' }, 'markdown'),
+    '# Notes',
+  )
+  assert.equal(validateAiText({ markdown: '' }, 'markdown'), null)
+  assert.equal(parseMarkdownConversion('# Converted'), '# Converted')
+  assert.throws(() => parseMarkdownConversion('  '))
+
+  const response = await fetch(`${baseUrl}/api/notes/convert-markdown`, {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer valid-test-token',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ markdown: '# Raw source' }),
+  })
+  assert.equal(response.status, 200)
+  assert.deepEqual(await response.json(), {
+    convertedMarkdown: '# Converted Markdown',
+  })
+
+  markdownConversionImplementation = async () => {
+    throw new Error('sensitive provider details')
+  }
+  const failed = await fetch(`${baseUrl}/api/notes/convert-markdown`, {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer valid-test-token',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ markdown: '<script>raw stays user-side</script>' }),
+  })
+  const body = await failed.text()
+  assert.equal(failed.status, 502)
+  assert.equal(body.includes('sensitive provider details'), false)
+  assert.equal(markdownConversionCalls, 2)
+  markdownConversionImplementation = async () => '# Converted Markdown'
+})
+
+test('parses structured SQL evaluation without claiming execution', () => {
+  assert.deepEqual(
+    parseSqlEvaluation(
+      JSON.stringify({
+        output: 'Illustrative output only.',
+        evaluation: 'Check table names before execution.',
+      }),
+    ),
+    {
+      output: 'Illustrative output only.',
+      evaluation: 'Check table names before execution.',
+    },
+  )
+  assert.throws(() =>
+    parseSqlEvaluation(JSON.stringify({ output: '', evaluation: 'Review' })),
+  )
 })

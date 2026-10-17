@@ -6,15 +6,14 @@ import { createApp } from './app.js'
 import { parseConfig } from './config.js'
 import { createProviders } from './providers.js'
 
-const rootEnvironmentFile = resolve(
+const backendEnvironmentFile = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '..',
-  '..',
-  '.env.local',
+  '.env',
 )
 
-if (existsSync(rootEnvironmentFile)) {
-  process.loadEnvFile(rootEnvironmentFile)
+if (existsSync(backendEnvironmentFile)) {
+  process.loadEnvFile(backendEnvironmentFile)
 }
 
 const config = parseConfig(process.env)

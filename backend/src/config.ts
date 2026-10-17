@@ -5,33 +5,38 @@ export type ServerConfig = {
   geminiPrimaryModel: string
   supabaseUrl: string
   supabasePublishableKey: string
-  frontendOrigin: string | null
+  frontendOrigins: string[]
+}
+
+function parseFrontendOrigins(value: string | undefined): string[] {
+  return [
+    ...new Set(
+      (value ?? '')
+        .split(',')
+        .map((origin) => origin.trim())
+        .filter((origin) => {
+          if (!origin) return false
+          try {
+            const parsed = new URL(origin)
+            return (
+              (parsed.protocol === 'https:' || parsed.protocol === 'http:') &&
+              parsed.origin === origin
+            )
+          } catch {
+            return false
+          }
+        }),
+    ),
+  ]
 }
 
 export function parseConfig(env: Environment): ServerConfig {
-  const frontendOrigin = env.FRONTEND_ORIGIN?.trim() ?? ''
-  let exactFrontendOrigin: string | null = null
-
-  if (frontendOrigin) {
-    try {
-      const originUrl = new URL(frontendOrigin)
-      if (
-        (originUrl.protocol === 'https:' || originUrl.protocol === 'http:') &&
-        originUrl.origin === frontendOrigin
-      ) {
-        exactFrontendOrigin = frontendOrigin
-      }
-    } catch {
-      exactFrontendOrigin = null
-    }
-  }
-
   return {
     geminiApiKey: env.GEMINI_API_KEY?.trim() ?? '',
     geminiPrimaryModel: env.GEMINI_PRIMARY_MODEL?.trim() ?? '',
     supabaseUrl: env.SUPABASE_URL?.trim() ?? '',
     supabasePublishableKey: env.SUPABASE_PUBLISHABLE_KEY?.trim() ?? '',
-    frontendOrigin: exactFrontendOrigin,
+    frontendOrigins: parseFrontendOrigins(env.FRONTEND_ORIGIN),
   }
 }
 
