@@ -23,11 +23,9 @@ import { screenStyles } from '../../src/components/expo-screen-styles'
 import { ThemeToggle } from '../../src/components/ThemeProvider'
 import { useAppTheme, type ThemeColors } from '../../src/components/ThemeContext'
 import {
-  executePracticeSql,
-  fetchPracticeSqlQuestion,
+  evaluateSqlWithAi,
   requestNoteAi,
   resolveExpoBackendBaseUrl,
-  type PracticeSqlResult,
 } from '../../src/lib/note-ai'
 import { AutosaveQueue, type SaveState } from '../../src/lib/autosave'
 import {
@@ -122,9 +120,8 @@ function NoteEditor({
   const [recoveryAction, setRecoveryAction] = useState<'restore' | 'discard' | null>(null)
   const [sqlOpen, setSqlOpen] = useState(one(params.mode) === 'sql')
   const [sqlQuestion, setSqlQuestion] = useState('')
-  const [sqlSchema, setSqlSchema] = useState<string[]>([])
   const [sqlDraft, setSqlDraft] = useState('')
-  const [sqlResult, setSqlResult] = useState<PracticeSqlResult | null>(null)
+  const [sqlResult, setSqlResult] = useState<string | null>(null)
   const [sqlEvaluation, setSqlEvaluation] = useState('')
   const [sqlBusy, setSqlBusy] = useState(false)
   const [sqlError, setSqlError] = useState('')
@@ -148,7 +145,6 @@ function NoteEditor({
   const activeEditorNoteId = useRef(noteId)
   const sqlRequestId = useRef(0)
   const markdownRequestId = useRef(0)
-  const sqlQuestionTouched = useRef(false)
   const sqlBusyLock = useRef(false)
   const markdownBusyLock = useRef(false)
   const copyBusyLock = useRef(false)
@@ -164,31 +160,6 @@ function NoteEditor({
       : '',
     Constants.expoConfig?.hostUri ?? '',
   )
-
-  useEffect(() => {
-    if (!sqlOpen || !session || !backendBaseUrl) return
-    let active = true
-    const requestedNoteId = noteId
-    void fetchPracticeSqlQuestion(backendBaseUrl, session.access_token)
-      .then((question) => {
-        if (!active || activeEditorNoteId.current !== requestedNoteId) return
-        if (!sqlQuestionTouched.current) setSqlQuestion(question.prompt)
-        setSqlSchema(question.schema)
-        setSqlError('')
-      })
-      .catch((error: unknown) => {
-        if (active) {
-          setSqlError(
-            error instanceof Error
-              ? error.message
-              : 'The SQL practice question could not be loaded.',
-          )
-        }
-      })
-    return () => {
-      active = false
-    }
-  }, [backendBaseUrl, noteId, session, sqlOpen])
 
   useEffect(() => {
     let active = true
@@ -445,60 +416,6 @@ function NoteEditor({
     router.back()
   }
 
-  async function evaluateSqlResult(
-    query: string,
-    result: PracticeSqlResult,
-    requestId = sqlRequestId.current,
-    selectedNoteId = noteId,
-    question = sqlQuestion,
-  ) {
-    if (!session) throw new Error('Sign in again to evaluate this query.')
-    const evaluated = await requestNoteAi(
-      {
-        kind: 'sql',
-        content: query,
-        accessToken: session.access_token,
-        question,
-        executionResult: JSON.stringify(result),
-      },
-      { baseUrl: backendBaseUrl },
-    )
-    if (!('evaluation' in evaluated)) {
-      throw new Error('The evaluation service returned an invalid response.')
-    }
-    if (
-      requestId === sqlRequestId.current &&
-      activeEditorNoteId.current === selectedNoteId
-    ) {
-      setSqlEvaluation(evaluated.evaluation)
-      console.info('[notes-ai] result displayed operation=sql-evaluation')
-    }
-  }
-
-  async function retrySqlEvaluation() {
-    if (!sqlResult || !sqlDraft.trim() || sqlBusyLock.current) return
-    console.info('[notes-ai] button clicked operation=sql-evaluation')
-    const requestId = sqlRequestId.current
-    const selectedNoteId = noteId
-    setSqlBusy(true)
-    sqlBusyLock.current = true
-    setSqlError('')
-    try {
-      await evaluateSqlResult(sqlDraft, sqlResult, requestId, selectedNoteId, sqlQuestion)
-    } catch (error) {
-      setSqlError(
-        error instanceof Error
-          ? error.message
-          : 'Gemini evaluation failed. Your query and SQL result are preserved; retry.',
-      )
-    } finally {
-      if (requestId === sqlRequestId.current && activeEditorNoteId.current === selectedNoteId) {
-        sqlBusyLock.current = false
-        setSqlBusy(false)
-      }
-    }
-  }
-
   function toggleMarkdownPanel() {
     if (!markdownOpen) {
       setMarkdownBusy(false)
@@ -562,7 +479,7 @@ function NoteEditor({
 
   function requestClearSql() {
     const hasWork = Boolean(
-      (sqlQuestionTouched.current && sqlQuestion.trim()) ||
+      sqlQuestion.trim() ||
       sqlDraft.trim() ||
       sqlResult ||
       sqlEvaluation ||
@@ -577,12 +494,10 @@ function NoteEditor({
     sqlRequestId.current += 1
     sqlBusyLock.current = false
     setSqlQuestion('')
-    sqlQuestionTouched.current = false
     setSqlDraft('')
     setSqlResult(null)
     setSqlEvaluation('')
     setSqlError('')
-    setSqlSchema([])
     setSqlBusy(false)
     setClearSqlConfirm(false)
     edit({
@@ -600,9 +515,21 @@ function NoteEditor({
     })
   }
 
-  async function runSqlPractice() {
-    if (!session || sqlBusyLock.current || !sqlDraft.trim()) return
-    console.info('[notes-ai] button clicked operation=sql-execution')
+  async function submitSqlEvaluation() {
+    if (sqlBusyLock.current) return
+    if (!session) {
+      setSqlError('Your sign-in session has expired. Sign in again and retry.')
+      return
+    }
+    if (!sqlQuestion.trim()) {
+      setSqlError('Enter a practice question before requesting an evaluation.')
+      return
+    }
+    if (!sqlDraft.trim()) {
+      setSqlError('Enter a SQL query before requesting an evaluation.')
+      return
+    }
+    console.info('[notes-ai] button clicked operation=sql-evaluation')
     const query = sqlDraft
     const question = sqlQuestion
     const requestId = ++sqlRequestId.current
@@ -610,23 +537,22 @@ function NoteEditor({
     sqlBusyLock.current = true
     setSqlBusy(true)
     setSqlError('')
-    setSqlResult(null)
-    setSqlEvaluation('')
     try {
-      const result = await executePracticeSql(
-        backendBaseUrl,
-        session.access_token,
-        query,
-        fetch,
-        question,
+      const evaluated = await evaluateSqlWithAi(
+        {
+          question,
+          sql: query,
+          accessToken: session.access_token,
+        },
+        { baseUrl: backendBaseUrl },
       )
       if (
         requestId !== sqlRequestId.current ||
         activeEditorNoteId.current !== selectedNoteId
       ) return
-      setSqlResult(result)
-      console.info('[notes-ai] result displayed operation=sql-execution')
-      await evaluateSqlResult(query, result, requestId, selectedNoteId, question)
+      setSqlResult(evaluated.output)
+      setSqlEvaluation(evaluated.evaluation)
+      console.info('[notes-ai] result displayed operation=sql-evaluation')
     } catch (error) {
       if (
         requestId === sqlRequestId.current &&
@@ -721,10 +647,10 @@ function NoteEditor({
       source_content: appendSqlPracticeToNote(valueRef.current.source_content, {
         question: sqlQuestion,
         sql: sqlDraft,
-        output: JSON.stringify(sqlResult, null, 2),
+        output: sqlResult,
         evaluation: sqlEvaluation,
       }),
-      sql_output: JSON.stringify(sqlResult),
+      sql_output: sqlResult,
       sql_evaluation: sqlEvaluation,
       sql_evaluated_source: sqlDraft,
     })
@@ -827,18 +753,16 @@ function NoteEditor({
                   editable={!sqlBusy}
                   multiline
                   onChangeText={(question) => {
-                    sqlQuestionTouched.current = true
                     sqlRequestId.current += 1
                     setSqlQuestion(question)
                     setSqlResult(null)
                     setSqlEvaluation('')
                     setSqlError('')
                   }}
-                  placeholder="Enter a SQL practice question or use the generated prompt."
+                  placeholder="Describe the SQL task you want reviewed."
                   style={[styles.sqlQuestion, { backgroundColor: colors.input, borderColor: colors.border, color: colors.text }]}
                   value={sqlQuestion}
                 />
-                {sqlSchema.map((definition) => <Text key={definition} style={[styles.schemaText, { color: colors.mutedText }]}>{definition}</Text>)}
                 <Text style={[screenStyles.fieldLabel, { color: colors.text }]}>SQL editor</Text>
                 <TextInput
                   accessibilityLabel="SQL practice query"
@@ -857,14 +781,9 @@ function NoteEditor({
                 />
                 {sqlError ? <Text accessibilityRole="alert" style={[screenStyles.notice, styles.error, { backgroundColor: colors.errorBackground, color: colors.errorText }]}>{sqlError}</Text> : null}
                 <View style={styles.sqlActions}>
-                  <Pressable accessibilityRole="button" disabled={sqlBusy || !backendBaseUrl} onPress={() => void runSqlPractice()} style={[screenStyles.button, (sqlBusy || !backendBaseUrl) && screenStyles.buttonDisabled]}>
-                    <Text style={screenStyles.buttonText}>{sqlBusy ? 'Running and evaluating…' : 'Run SQL'}</Text>
+                  <Pressable accessibilityRole="button" disabled={sqlBusy || !backendBaseUrl} onPress={() => void submitSqlEvaluation()} style={[screenStyles.button, (sqlBusy || !backendBaseUrl) && screenStyles.buttonDisabled]}>
+                    <Text style={screenStyles.buttonText}>{sqlBusy ? 'Evaluating with AI…' : 'Evaluate with AI'}</Text>
                   </Pressable>
-                  {sqlResult && !sqlEvaluation && sqlError ? (
-                    <Pressable accessibilityRole="button" disabled={sqlBusy} onPress={() => void retrySqlEvaluation()} style={[screenStyles.secondaryButton, sqlBusy && screenStyles.buttonDisabled]}>
-                      <Text style={screenStyles.secondaryText}>Retry Gemini evaluation</Text>
-                    </Pressable>
-                  ) : null}
                   <Pressable accessibilityRole="button" onPress={() => setSqlOpen(false)} style={screenStyles.secondaryButton}>
                     <Text style={[screenStyles.secondaryText, { color: colors.accentText }]}>Close</Text>
                   </Pressable>
@@ -877,16 +796,16 @@ function NoteEditor({
                 </View>
                 {!backendBaseUrl ? <Text accessibilityRole="alert" style={[styles.errorText, { color: colors.errorText }]}>Set EXPO_PUBLIC_API_BASE_URL or open Expo Go on the same LAN as the backend.</Text> : null}
                 <View style={[styles.sqlResult, { backgroundColor: colors.surfaceMuted }]}>
-                  <Text style={[screenStyles.fieldLabel, { color: colors.text }]}>SQL output</Text>
-                  {sqlBusy && !sqlResult ? <Text style={[screenStyles.body, { color: colors.mutedText }]}>Running the query…</Text> : null}
-                  {sqlResult ? <Text selectable style={[styles.resultCode, { color: colors.text }]}>{JSON.stringify(sqlResult, null, 2)}{sqlResult.truncated ? `\nOnly the first ${sqlResult.rowLimit} rows are shown.` : ''}</Text> : null}
-                  {!sqlBusy && !sqlResult && !sqlError ? <Text style={[screenStyles.body, { color: colors.mutedText }]}>Run a query to see its execution output.</Text> : null}
+                  <Text style={[screenStyles.fieldLabel, { color: colors.text }]}>Illustrative output</Text>
+                  {sqlBusy && !sqlResult ? <Text style={[screenStyles.body, { color: colors.mutedText }]}>Waiting for AI evaluation…</Text> : null}
+                  {sqlResult ? <Text selectable style={[styles.resultCode, { color: colors.text }]}>{sqlResult}</Text> : null}
+                  {!sqlBusy && !sqlResult && !sqlError ? <Text style={[screenStyles.body, { color: colors.mutedText }]}>AI-generated illustrative output appears here. Your SQL is never executed.</Text> : null}
                 </View>
                 <View style={[styles.sqlResult, { backgroundColor: colors.surfaceMuted }]}>
                   <Text style={[screenStyles.fieldLabel, { color: colors.text }]}>Gemini AI evaluation</Text>
-                  {sqlBusy && sqlResult && !sqlEvaluation ? <Text style={[screenStyles.body, { color: colors.mutedText }]}>Evaluating the executed query…</Text> : null}
+                  {sqlBusy && !sqlEvaluation ? <Text style={[screenStyles.body, { color: colors.mutedText }]}>Reviewing your SQL…</Text> : null}
                   {sqlEvaluation ? <Text style={[screenStyles.body, { color: colors.text }]}>{sqlEvaluation}</Text> : null}
-                  {!sqlBusy && !sqlEvaluation && !sqlError ? <Text style={[screenStyles.body, { color: colors.mutedText }]}>Evaluation appears after successful execution.</Text> : null}
+                  {!sqlBusy && !sqlEvaluation && !sqlError ? <Text style={[screenStyles.body, { color: colors.mutedText }]}>Evaluation appears after a successful AI response.</Text> : null}
                 </View>
               </View>
             ) : null}
@@ -1149,7 +1068,6 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.8 },
   sqlPanel: { backgroundColor: '#f7f4fa', borderColor: '#ded4e7', borderRadius: 14, borderWidth: 1, gap: 12, padding: 16 },
   sqlQuestion: { borderRadius: 10, borderWidth: 1, fontSize: 15, lineHeight: 22, minHeight: 84, padding: 12, textAlignVertical: 'top' },
-  schemaText: { color: '#554767', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 13 },
   sqlInput: { backgroundColor: '#ffffff', borderColor: '#cfc5d7', borderRadius: 10, borderWidth: 1, color: '#30283d', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 14, lineHeight: 21, minHeight: 150, padding: 12, textAlignVertical: 'top' },
   sqlActions: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   sqlResult: { backgroundColor: '#ffffff', borderRadius: 10, gap: 8, padding: 12 },

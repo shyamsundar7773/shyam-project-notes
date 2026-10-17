@@ -13,7 +13,6 @@ type AiRequest =
       content: string
       accessToken: string
       question?: string
-      executionResult?: string
     }
   | { kind: 'markdown'; content: string; accessToken: string }
 
@@ -22,6 +21,42 @@ export type PracticeSqlResult = {
   rows: Array<Record<string, string | number | boolean | null>>
   rowLimit: number
   truncated: boolean
+}
+
+export async function evaluateSqlWithAi(
+  input: {
+    question: string
+    sql: string
+    accessToken: string
+  },
+  options: {
+    baseUrl: string
+    fetcher?: typeof fetch
+    timeoutMs?: number
+  },
+): Promise<SqlAiResult> {
+  if (!input.question.trim()) {
+    throw new Error('Enter a practice question before requesting an evaluation.')
+  }
+  if (!input.sql.trim()) {
+    throw new Error('Enter a SQL query before requesting an evaluation.')
+  }
+  if (!input.accessToken.trim()) {
+    throw new Error('Your sign-in session has expired. Sign in again and retry.')
+  }
+  const result = await requestNoteAi(
+    {
+      kind: 'sql',
+      content: input.sql,
+      question: input.question,
+      accessToken: input.accessToken,
+    },
+    options,
+  )
+  if (!('evaluation' in result)) {
+    throw new Error('The AI service returned an invalid evaluation.')
+  }
+  return result
 }
 
 async function withRequestDeadline<T>(
@@ -236,6 +271,9 @@ export async function requestNoteAi(
       'AI service is not configured. Set VITE_BACKEND_URL for Vite or EXPO_PUBLIC_API_BASE_URL for Expo to the backend origin.',
     )
   }
+  if (!request.accessToken.trim()) {
+    throw new Error('Your sign-in session has expired. Sign in again and retry.')
+  }
 
   const endpoint =
     request.kind === 'sql'
@@ -250,9 +288,6 @@ export async function requestNoteAi(
       ? {
           sql: request.content,
           ...(request.question ? { question: request.question } : {}),
-          ...(request.executionResult
-            ? { executionResult: request.executionResult }
-            : {}),
         }
       : { markdown: request.content }
   const controller = new AbortController()
@@ -272,25 +307,27 @@ export async function requestNoteAi(
   try {
     response = await Promise.race([
       (options.fetcher ?? fetch)(`${baseUrl}${endpoint}`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${request.accessToken}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${request.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
       }),
       requestTimeout,
     ])
   } catch {
     clearTimeout(timeout)
     if (timedOut) {
+      console.warn(`[notes-ai] request failed operation=${operation} stage=fetch elapsed_ms=${Date.now() - startedAt} error_category=timeout`)
       throw new Error(
         'The AI request timed out. Your source text is unchanged; retry when the backend is available.',
       )
     }
+    console.warn(`[notes-ai] request failed operation=${operation} stage=fetch elapsed_ms=${Date.now() - startedAt} error_category=network_or_cors`)
     throw new Error(
-      'The AI service could not be reached. Your source text is unchanged; try again.',
+      'The AI service did not return an HTTP response. Check your connection and backend URL; in a web browser, verify the backend allows this exact frontend origin (CORS). Your source text is unchanged.',
     )
   }
   console.info(`[notes-ai] backend response operation=${operation} status=${response.status} elapsed_ms=${Date.now() - startedAt}`)
@@ -301,10 +338,15 @@ export async function requestNoteAi(
   } catch {
     clearTimeout(timeout)
     if (timedOut) {
+      console.warn(`[notes-ai] request failed operation=${operation} stage=response elapsed_ms=${Date.now() - startedAt} error_category=timeout`)
       throw new Error(
         'The AI request timed out. Your source text is unchanged; retry when the backend is available.',
       )
     }
+    if (!response.ok) {
+      throw new Error(`The AI request failed with HTTP ${response.status}. Your source text is unchanged; retry or check the backend configuration.`)
+    }
+    console.warn(`[notes-ai] request failed operation=${operation} stage=response elapsed_ms=${Date.now() - startedAt} error_category=malformed_response`)
     throw new Error(
       'The AI service returned an invalid response. Your source text is unchanged.',
     )
@@ -313,7 +355,7 @@ export async function requestNoteAi(
   console.info(`[notes-ai] response parsed operation=${operation} elapsed_ms=${Date.now() - startedAt}`)
 
   if (!response.ok) {
-    const message =
+    const backendMessage =
       typeof result === 'object' &&
       result !== null &&
       'error' in result &&
@@ -322,7 +364,18 @@ export async function requestNoteAi(
       'message' in result.error &&
       typeof result.error.message === 'string'
         ? result.error.message
-        : `The AI request failed (HTTP ${response.status}). Your source text is unchanged; try again.`
+        : ''
+    const message =
+      response.status === 401
+        ? 'Your sign-in session is missing or expired. Sign in again and retry.'
+        : response.status === 403
+          ? 'Your account is not authorized to use this AI action.'
+          : response.status === 404
+            ? 'The AI endpoint was not found. Check that the frontend uses the current backend URL and release.'
+            : response.status === 429
+              ? 'The AI service is rate limited. Wait a moment and retry.'
+              : backendMessage ||
+                `The AI request failed (HTTP ${response.status}). Your source text is unchanged; try again.`
     throw new Error(message)
   }
 

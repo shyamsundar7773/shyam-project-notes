@@ -34,6 +34,7 @@ import {
 } from '../src/lib/notes'
 import {
   executePracticeSql,
+  evaluateSqlWithAi,
   fetchPracticeSqlQuestion,
   requestNoteAi,
   resolveBackendBaseUrl,
@@ -704,22 +705,67 @@ test('SQL execution sends the current question as context to the backend endpoin
   })
 })
 
-test('Gemini evaluation failure keeps the submitted query and executed result available', async () => {
-  const query = 'SELECT name FROM employees'
-  const result = {
-    columns: ['name'],
-    rows: [{ name: 'Asha' }],
-    rowLimit: 200,
-    truncated: false,
+test('opening the Expo SQL panel has no request and explicit SQL evaluation validates locally', async () => {
+  const expoNote = readFileSync(new URL('../app/(app)/note.tsx', import.meta.url), 'utf8')
+  assert.match(expoNote, /evaluateSqlWithAi/)
+  assert.doesNotMatch(expoNote, /fetchPracticeSqlQuestion|executePracticeSql/)
+
+  let requests = 0
+  const fetcher: typeof fetch = async () => {
+    requests += 1
+    return Response.json({ output: 'One row', evaluation: 'Looks correct.' })
   }
   await assert.rejects(
-    requestNoteAi(
+    evaluateSqlWithAi(
+      { question: '', sql: '', accessToken: 'test-access-token' },
+      { baseUrl: 'https://api.example.test', fetcher },
+    ),
+    /Enter a practice question/i,
+  )
+  await assert.rejects(
+    evaluateSqlWithAi(
+      { question: 'Return one row.', sql: ' ', accessToken: 'test-access-token' },
+      { baseUrl: 'https://api.example.test', fetcher },
+    ),
+    /Enter a SQL query/i,
+  )
+  assert.equal(requests, 0)
+})
+
+test('SQL evaluation sends only the validated SQL and question with bearer authentication', async () => {
+  let target = ''
+  let body = ''
+  let authorization = ''
+  const result = await evaluateSqlWithAi(
+    {
+      question: 'Return one row.',
+      sql: 'SELECT 1;',
+      accessToken: 'test-access-token',
+    },
+    {
+      baseUrl: 'https://api.example.test/',
+      fetcher: async (input, init) => {
+        target = String(input)
+        body = String(init?.body)
+        authorization = new Headers(init?.headers).get('authorization') ?? ''
+        return Response.json({ output: 'One row', evaluation: 'Looks correct.' })
+      },
+    },
+  )
+  assert.equal(target, 'https://api.example.test/api/notes/evaluate-sql')
+  assert.deepEqual(JSON.parse(body), { sql: 'SELECT 1;', question: 'Return one row.' })
+  assert.equal(authorization, 'Bearer test-access-token')
+  assert.deepEqual(result, { output: 'One row', evaluation: 'Looks correct.' })
+})
+
+test('Gemini evaluation failure preserves the submitted question and SQL', async () => {
+  const query = 'SELECT name FROM employees'
+  await assert.rejects(
+    evaluateSqlWithAi(
       {
-        kind: 'sql',
-        content: query,
-        accessToken: 'test-access-token',
+        sql: query,
         question: 'List employees.',
-        executionResult: JSON.stringify(result),
+        accessToken: 'test-access-token',
       },
       {
         baseUrl: 'https://api.example.test',
@@ -739,11 +785,12 @@ test('Gemini evaluation failure keeps the submitted query and executed result av
   )
 
   assert.equal(query, 'SELECT name FROM employees')
-  assert.deepEqual(result.rows, [{ name: 'Asha' }])
 })
 
 test('Markdown conversion accepts a valid Gemini response and keeps the call server-scoped', async () => {
   let target = ''
+  let body = ''
+  let authorization = ''
   const result = await requestNoteAi(
     {
       kind: 'markdown',
@@ -752,14 +799,18 @@ test('Markdown conversion accepts a valid Gemini response and keeps the call ser
     },
     {
       baseUrl: 'https://api.example.test',
-      fetcher: async (input) => {
+      fetcher: async (input, init) => {
         target = String(input)
+        body = String(init?.body)
+        authorization = new Headers(init?.headers).get('authorization') ?? ''
         return Response.json({ convertedMarkdown: '# Improved notes' })
       },
     },
   )
   assert.deepEqual(result, { convertedMarkdown: '# Improved notes' })
   assert.equal(target, 'https://api.example.test/api/notes/convert-markdown')
+  assert.deepEqual(JSON.parse(body), { markdown: '# Source' })
+  assert.equal(authorization, 'Bearer test-access-token')
 })
 
 test('AI request timeout aborts the request and returns a retryable message', async () => {
@@ -822,12 +873,20 @@ test('AI request reports malformed successful responses and non-JSON failures', 
         fetcher: async () => new Response('upstream failure', { status: 502 }),
       },
     ),
-    /invalid response/i,
+    /HTTP 502/i,
   )
 })
 
 test('AI request surfaces authenticated and upstream HTTP failures', async () => {
-  for (const status of [401, 403, 404, 429, 500, 503]) {
+  const expectedMessages = new Map([
+    [401, /session is missing or expired/i],
+    [403, /not authorized/i],
+    [404, /endpoint was not found/i],
+    [429, /rate limited/i],
+    [500, /Backend error 500/i],
+    [503, /Backend error 503/i],
+  ])
+  for (const [status, expected] of expectedMessages) {
     const message = `Backend error ${status}`
     await assert.rejects(
       requestNoteAi(
@@ -845,7 +904,7 @@ test('AI request surfaces authenticated and upstream HTTP failures', async () =>
             ),
         },
       ),
-      new RegExp(message),
+      expected,
     )
   }
 })
@@ -868,8 +927,26 @@ test('AI request reports missing backend configuration and network failures', as
         },
       },
     ),
-    /could not be reached/i,
+    /did not return an HTTP response.*CORS/i,
   )
+})
+
+test('AI requests reject an absent access token before network access', async () => {
+  let requests = 0
+  await assert.rejects(
+    requestNoteAi(
+      { kind: 'markdown', content: '# Source', accessToken: '' },
+      {
+        baseUrl: 'https://api.example.test',
+        fetcher: async () => {
+          requests += 1
+          return Response.json({ convertedMarkdown: '# Converted' })
+        },
+      },
+    ),
+    /session has expired/i,
+  )
+  assert.equal(requests, 0)
 })
 
 test('autosave serializes requests and persists the newest edited revision', async () => {
