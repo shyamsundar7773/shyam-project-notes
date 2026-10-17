@@ -280,11 +280,11 @@ test('CORS accepts an explicit comma-separated origin allowlist only', async () 
       'http://localhost:5173, http://192.168.1.20:5173, https://unrelated.example',
   })
   assert.deepEqual(lanConfig.frontendOrigins, [
+    'https://shyam-project-notes.netlify.app',
     'http://localhost:5173',
     'http://192.168.1.20:5173',
     'https://unrelated.example',
   ])
-
   const lanServer = createServer(
     createApp(lanConfig, {
       verifyAccessToken: async () => true,
@@ -310,6 +310,94 @@ test('CORS accepts an explicit comma-separated origin allowlist only', async () 
   } finally {
     await new Promise<void>((resolve, reject) =>
       lanServer.close((error) => (error ? reject(error) : resolve())),
+    )
+  }
+})
+
+test('production AI CORS preflight and authenticated SQL and Markdown requests work', async () => {
+  const origin = 'https://shyam-project-notes.netlify.app'
+  assert.ok(config.frontendOrigins.includes(origin))
+  const testServer = createServer(
+    createApp(config, {
+      verifyAccessToken: async (token) => token === 'verified-test-token',
+      convertNotes: async () => convertedNotes,
+      evaluateSql: async () => ({
+        output: 'Illustrative rows only.',
+        evaluation: 'Review the join condition.',
+      }),
+      convertMarkdown: async () => '# Converted Markdown',
+    }),
+  )
+  await new Promise<void>((resolve) =>
+    testServer.listen(0, '127.0.0.1', resolve),
+  )
+  const address = testServer.address() as AddressInfo
+  const testBaseUrl = `http://127.0.0.1:${address.port}`
+
+  try {
+    for (const path of [
+      '/api/notes/evaluate-sql',
+      '/api/notes/convert-markdown',
+    ]) {
+      const preflight = await fetch(`${testBaseUrl}${path}`, {
+        method: 'OPTIONS',
+        headers: {
+          origin,
+          'access-control-request-method': 'POST',
+          'access-control-request-headers': 'authorization,content-type',
+        },
+      })
+      assert.equal(preflight.status, 204)
+      assert.equal(preflight.headers.get('access-control-allow-origin'), origin)
+      assert.match(
+        preflight.headers.get('access-control-allow-headers') ?? '',
+        /authorization/i,
+      )
+      assert.match(
+        preflight.headers.get('access-control-allow-headers') ?? '',
+        /content-type/i,
+      )
+    }
+
+    const sqlResponse = await fetch(`${testBaseUrl}/api/notes/evaluate-sql`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer verified-test-token',
+        'content-type': 'application/json',
+        origin,
+      },
+      body: JSON.stringify({ sql: 'SELECT * FROM example_table;' }),
+    })
+    assert.equal(sqlResponse.status, 200)
+    assert.equal(sqlResponse.headers.get('access-control-allow-origin'), origin)
+    assert.deepEqual(await sqlResponse.json(), {
+      output: 'Illustrative rows only.',
+      evaluation: 'Review the join condition.',
+    })
+
+    const markdownResponse = await fetch(
+      `${testBaseUrl}/api/notes/convert-markdown`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer verified-test-token',
+          'content-type': 'application/json',
+          origin,
+        },
+        body: JSON.stringify({ markdown: '# Raw source' }),
+      },
+    )
+    assert.equal(markdownResponse.status, 200)
+    assert.equal(
+      markdownResponse.headers.get('access-control-allow-origin'),
+      origin,
+    )
+    assert.deepEqual(await markdownResponse.json(), {
+      convertedMarkdown: '# Converted Markdown',
+    })
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      testServer.close((error) => (error ? reject(error) : resolve())),
     )
   }
 })

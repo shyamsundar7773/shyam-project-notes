@@ -10,8 +10,10 @@
   "scripts": {
     "start": "node scripts/start.mjs",
     "start:expo": "node scripts/start-expo.mjs",
-    "dev": "vite",
+    "dev": "node scripts/start-expo.mjs --web --port 5173",
+    "dev:vite": "vite",
     "build": "tsc -b && vite build && npm --prefix backend run build",
+    "build:netlify": "npm run typecheck:expo && node scripts/build-netlify.mjs",
     "build:expo:web": "expo export --platform web --output-dir expo-web-build",
     "lint": "eslint .",
     "preview": "vite preview",

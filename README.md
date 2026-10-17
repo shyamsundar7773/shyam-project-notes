@@ -1,10 +1,11 @@
 # Shyam Project Notes
 
 A React Native/Expo application and existing Vite product frontend, backed by
-Supabase and an Express/TypeScript API. The Expo app includes authenticated
-Category → Topic → Subtopic and file workflows plus persisted notes, editor,
-autosave, copy/delete, and an initial isolated SQL-practice panel. The Vite
-frontend remains supported and has its existing file and notes workflows.
+Supabase and an Express/TypeScript API. Expo Router is the canonical app for
+local browser development and Netlify; it includes authenticated Category →
+Topic → Subtopic and file workflows plus persisted notes, editor, autosave,
+copy/delete, and an isolated SQL-practice panel. The Vite frontend remains
+available as an alternative with its existing file and notes workflows.
 
 ## Local development
 
@@ -13,17 +14,20 @@ npm install
 npm run dev
 ```
 
-### Expo application (local Phase 1/2 and initial Phase 3 workflows)
+`npm run dev` starts the canonical Expo Router app in a browser at
+`http://localhost:5173`. Use `npm run dev:vite` to run the separate Vite
+frontend. `npm start` starts Expo for native development; press `w` to open
+its web app.
+
+### Expo application
 
 ```sh
 npm start
 ```
 
-Expo starts the React Native application. Press `w` in the Expo terminal to
-open its web version, or install Expo Go on an Android phone connected to the
-same Wi-Fi and scan the displayed QR code. Allow the development server
-through the laptop's private-network firewall if needed. For a web-only
-startup check, use `npm start -- --web`.
+Expo starts the React Native application. Install Expo Go on an Android phone
+connected to the same Wi-Fi and scan the displayed QR code. Allow the
+development server through the laptop's private-network firewall if needed.
 
 The Expo app includes Supabase email/password auth and recovery, persisted
 sessions, Category → Topic → Subtopic creation/selection, file creation,
@@ -33,9 +37,12 @@ dataset; it never executes submitted SQL against Supabase. Gemini evaluates
 the submitted SQL and sandbox result separately. Local tests and exports do
 not prove live Supabase/RLS behavior, rendered browser behavior, Expo Go
 interaction, a live Gemini request, or deployment configuration. Keep the
-existing Vite workflow (`npm run dev`, `npm run build`, `npm run preview`)
+existing Vite workflow (`npm run dev:vite`, `npm run build`, `npm run preview`)
 intact. `npm run build:expo:web` exports the Expo site to the ignored
-`expo-web-build/` directory.
+`expo-web-build/` directory. `npm run build:netlify` typechecks Expo and
+exports its static routes for Netlify, mapping existing Vite public Supabase
+and backend settings to the matching Expo variable names when needed. The
+build fails if required public frontend configuration is missing.
 
 The root `.env.example` is the frontend template for both current frontends.
 Copy it to the ignored root `.env.local` and use:
@@ -46,9 +53,13 @@ Copy it to the ignored root `.env.local` and use:
   `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY`; optionally set
   `EXPO_PUBLIC_API_BASE_URL` for SQL practice/backend requests.
 
-Vite consumes its own `VITE_` names; Expo consumes its `EXPO_PUBLIC_` names.
-Set the corresponding public Supabase project URL and publishable key for the
-frontend you run. Vite reads `VITE_BACKEND_URL` at build time. Set it to the
+Vite-specific `VITE_` Supabase values take precedence; if they are absent or
+blank, Vite can reuse the matching `EXPO_PUBLIC_` Supabase URL and publishable
+key. Expo consumes its `EXPO_PUBLIC_` names. Netlify's Expo build prefers
+explicit Expo values and otherwise maps the corresponding existing Vite
+public values. Set the public Supabase project URL and publishable key for
+the frontend you run. Vite reads
+`VITE_BACKEND_URL` at build time. Set it to the
 backend origin in Netlify's production environment before building; a change
 to this value requires a new frontend build. When blank, Vite derives
 `http://<current-browser-host>:3001` only for local HTTP development. A deployed
@@ -57,7 +68,7 @@ unconfigured. Expo uses `EXPO_PUBLIC_API_BASE_URL` when set; local web and
 same-LAN native development can derive a backend address when possible. The earlier
 unused-variable assumption is superseded: Expo now consumes this established
 name. Expo CLI can list public-prefixed environment variable names without
-using them. Vite explicitly injects only its three configured variables.
+using them. Vite explicitly injects only its three resolved public variables.
 Never put Gemini credentials, a Supabase service-role/secret key, or other
 server-only credentials in frontend variables. Configuration being present
 does not verify a live connection. Supabase Auth email-confirmation behavior
@@ -71,9 +82,11 @@ optional locally and defaults to `3001`. `SUPABASE_URL` and
 `SUPABASE_PUBLISHABLE_KEY` are used by the backend to verify bearer tokens;
 no service-role key is required. `GEMINI_API_KEY` and
 `GEMINI_PRIMARY_MODEL` are needed for the Gemini-backed endpoints.
-`FRONTEND_ORIGIN` is needed for browser CORS access and accepts exact
-comma-separated origins (scheme, host, and optional port only; no path or
-trailing slash). Keep all Gemini credentials on the backend.
+`FRONTEND_ORIGIN` adds exact comma-separated browser origins (scheme, host,
+and optional port only; no path or trailing slash). The production Netlify
+origin `https://shyam-project-notes.netlify.app` is allowed by default; set
+`FRONTEND_ORIGIN` for additional local or preview origins. Keep all Gemini
+credentials on the backend.
 
 Expo auth persistence uses AsyncStorage through the Supabase SDK. The Expo
 app uses actual cloud workspace and note records; it does not fabricate
@@ -214,8 +227,11 @@ From `backend/`, run `npm run build` and `npm test`.
 
 ## Build and deployment
 
-- `npm run build` runs the TypeScript project build and creates the production
-  site in `dist/`.
+- `npm run build` runs the Vite TypeScript/project build and compiles the
+  backend for the root Render service.
+- `npm run build:netlify` typechecks Expo, exports static Expo Router routes,
+  verifies its entry HTML/bundle, and publishes the canonical app from
+  `expo-web-build/`.
 - `npm run preview` serves the production build locally.
 - `npm start` starts Expo for local development when `PORT` is unset; when
   `PORT` is supplied by Render, it starts the compiled Express backend.
@@ -225,8 +241,9 @@ From `backend/`, run `npm run build` and `npm test`.
   health-check path `/health`. Render's `PORT` selects the Express server;
   without `PORT`, `npm start` preserves the local Expo workflow. The root
   package requires Node `>=24.10.0`, matching the backend runtime.
-- `netlify.toml` configures the build command, output directory, and SPA
-  fallback for Netlify.
+- `netlify.toml` builds the canonical Expo Router app and maps extensionless
+  static routes to their generated HTML files. The separate Vite app is not
+  the Netlify production entry point.
 - In Netlify's production environment, set `VITE_BACKEND_URL` to the Render
   backend origin and rebuild the frontend after changing it. This public
   frontend setting contains no secret; Vite embeds it in the build.
@@ -236,7 +253,6 @@ From `backend/`, run `npm run build` and `npm test`.
   Dashboard → Service → Environment, configure `GEMINI_API_KEY`,
   `GEMINI_PRIMARY_MODEL`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, and
   `FRONTEND_ORIGIN`. Render provides `PORT`; do not hard-code or copy a local
-  port into the production service. Set `FRONTEND_ORIGIN` to the exact origin
-  of the deployed frontend only after that URL is known. No production
-  frontend or Render service URL has been verified, and this repository does
-  not change Render settings.
+  port into the production service. The production Netlify origin is already
+  included by the backend allowlist; set `FRONTEND_ORIGIN` for any additional
+  origins.

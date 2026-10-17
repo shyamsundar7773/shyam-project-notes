@@ -1,8 +1,8 @@
 [build]
-command = "npm run build"
-publish = "dist"
+command = "npm run build:netlify"
+publish = "expo-web-build"
 
 [[redirects]]
-from = "/*"
-to = "/index.html"
+from = "/:route"
+to = "/:route.html"
 status = 200

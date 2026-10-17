@@ -8,24 +8,29 @@ export type ServerConfig = {
   frontendOrigins: string[]
 }
 
+const defaultFrontendOrigins = ['https://shyam-project-notes.netlify.app']
+
 function parseFrontendOrigins(value: string | undefined): string[] {
   return [
     ...new Set(
-      (value ?? '')
-        .split(',')
-        .map((origin) => origin.trim())
-        .filter((origin) => {
-          if (!origin) return false
-          try {
-            const parsed = new URL(origin)
-            return (
-              (parsed.protocol === 'https:' || parsed.protocol === 'http:') &&
-              parsed.origin === origin
-            )
-          } catch {
-            return false
-          }
-        }),
+      [
+        ...defaultFrontendOrigins,
+        ...(value ?? '')
+          .split(',')
+          .map((origin) => origin.trim())
+          .filter((origin) => {
+            if (!origin) return false
+            try {
+              const parsed = new URL(origin)
+              return (
+                (parsed.protocol === 'https:' || parsed.protocol === 'http:') &&
+                parsed.origin === origin
+              )
+            } catch {
+              return false
+            }
+          }),
+      ],
     ),
   ]
 }
