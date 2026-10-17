@@ -39,6 +39,20 @@ function requestId(response: Response): string {
   return response.locals.requestId as string
 }
 
+function requestOrigin(request: Request): string {
+  const origin = request.header('origin')
+  if (!origin) return 'none'
+  try {
+    const url = new URL(origin)
+    return (url.protocol === 'http:' || url.protocol === 'https:') &&
+      url.origin === origin
+      ? url.origin
+      : 'invalid'
+  } catch {
+    return 'invalid'
+  }
+}
+
 function logAuthStage(
   response: Response,
   result: 'passed' | 'rejected' | 'unavailable',
@@ -201,7 +215,7 @@ export function createApp(
       const responseStage =
         request.method === 'OPTIONS' ? 'preflight_response' : 'response'
       console.info(
-        `[notes-ai] timestamp_ms=${Date.now()} request_id=${id} operation=${operation} stage=${requestStage} origin=${request.header('origin') ?? 'none'} path=${request.path}`,
+        `[notes-ai] timestamp_ms=${Date.now()} request_id=${id} operation=${operation} stage=${requestStage} origin=${requestOrigin(request)} path=${request.path}`,
       )
       response.once('finish', () => {
         console.info(
