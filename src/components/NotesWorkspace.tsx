@@ -35,6 +35,7 @@ import {
   requestNoteAi,
   resolveBackendBaseUrl,
 } from '../lib/note-ai'
+import { convertMarkdownSource } from '../lib/markdown'
 import { MarkdownPreview } from './MarkdownPreview'
 
 type Props = {
@@ -540,29 +541,14 @@ function NoteEditor({
     setAiBusy(true)
     setAiError('')
     try {
-      const result = await requestNoteAi(
-        {
-          kind: 'markdown',
-          content: value.source_content,
-          accessToken: session.access_token,
-        },
-        {
-          baseUrl: resolveBackendBaseUrl(
-            import.meta.env.VITE_BACKEND_URL ?? '',
-            window.location.href,
-          ),
-        },
-      )
-      if (!('convertedMarkdown' in result)) {
-        throw new Error('The AI service returned an invalid conversion.')
-      }
+      const convertedMarkdown = convertMarkdownSource(value.source_content)
       if (!mounted.current) return
       edit({
-        markdown_output: result.convertedMarkdown,
+        markdown_output: convertedMarkdown,
         markdown_converted_source: value.source_content,
       })
       setMarkdownSourceVisible(false)
-      console.info('[notes-ai] result displayed operation=markdown-conversion')
+      console.info('[markdown] result rendered operation=markdown-conversion')
     } catch (error) {
       setAiError(errorMessage(error))
     } finally {
@@ -768,7 +754,7 @@ function NoteEditor({
           {value.markdown_output && !markdownSourceVisible ? (
             <>
               <section className="markdown-result" aria-label="Converted Markdown">
-                <div className="result-label">AI-converted Markdown</div>
+                <div className="result-label">Formatted Markdown</div>
                 {resultIsStale ? (
                   <p className="notice notice--warning">
                     This result reflects an earlier source. Convert again to
@@ -808,7 +794,7 @@ function NoteEditor({
                   onClick={() => void convertMarkdown()}
                   disabled={aiBusy}
                 >
-                  {aiBusy ? 'Converting…' : 'Convert with AI'}
+                  {aiBusy ? 'Converting…' : 'Convert Markdown'}
                 </button>
                 <span className="field-hint">
                   Conversion runs only when requested. Unsafe HTML is displayed

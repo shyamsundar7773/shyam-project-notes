@@ -5,12 +5,10 @@ import { createClient } from '@supabase/supabase-js'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { MarkdownPreview } from '../src/components/MarkdownPreview'
 import { resolveAppTheme } from '../src/components/ThemeContext'
-import { resolveAppTheme } from '../src/components/ThemeContext'
 import { AutosaveQueue, type SaveState } from '../src/lib/autosave'
 import { RequestSequence } from '../src/lib/request-sequence'
 import {
   appendSqlPracticeToNote,
-  removeMarkedSqlPracticeFromNote,
   removeMarkedSqlPracticeFromNote,
   draftStorageKey,
   copyNote,
@@ -32,6 +30,17 @@ import {
   type Note,
   type EditableNote,
 } from '../src/lib/notes'
+import {
+  appendMarkdownToNote,
+  convertMarkdownSource,
+  getMarkdownBlockSource,
+  getStoredMarkdownBlocks,
+  parseSafeHtml,
+  parseMarkdown,
+  removeDuplicateMarkdownFromRoughNotes,
+  removeMarkdownBlockFromNote,
+  updateMarkdownBlockInNote,
+} from '../src/lib/markdown'
 import {
   executePracticeSql,
   evaluateSqlWithAi,
@@ -1082,8 +1091,653 @@ test('Markdown preview encodes raw HTML and does not render executable markup', 
   )
   assert.equal(markup.includes('<img'), false)
   assert.equal(markup.includes('<script'), false)
-  assert.match(markup, /&lt;img/)
-  assert.match(markup, /&lt;script/)
+  assert.doesNotMatch(markup, /onerror|alert\(1\)/)
+})
+
+test('Markdown conversion renders headings, paragraphs, emphasis, and lists as content', () => {
+  const source = [
+    '# Study Notes',
+    '',
+    'A first paragraph.',
+    'A continued line.',
+    '',
+    'Use **bold** and *italic* text.',
+    '',
+    '- First item',
+    '- **Second item**',
+  ].join('\r\n')
+  const converted = convertMarkdownSource(source)
+  const blocks = parseMarkdown(converted)
+  const markup = renderToStaticMarkup(MarkdownPreview({ source: converted }))
+
+  assert.equal(blocks[0]?.type, 'heading')
+  assert.match(markup, /<h1>Study Notes<\/h1>/)
+  assert.match(markup, /<p>A first paragraph\.\nA continued line\.<\/p>/)
+  assert.match(markup, /<strong>bold<\/strong>/)
+  assert.match(markup, /<em>italic<\/em>/)
+  assert.match(markup, /<ul>[\s\S]*<li><p>First item<\/p><\/li>/)
+  assert.match(markup, /<strong>Second item<\/strong>/)
+  assert.doesNotMatch(markup, /# Study Notes/)
+})
+
+test('Markdown conversion preserves fenced code, tables, links, and blockquotes', () => {
+  const source = [
+    '```sql',
+    'SELECT salary FROM Employees;',
+    '```',
+    '',
+    '| name | salary |',
+    '| --- | ---: |',
+    '| Arun | 45000 |',
+    '',
+    '> Sample-only result',
+    '',
+    '[Docs](https://example.test/docs)',
+  ].join('\n')
+  const converted = convertMarkdownSource(source)
+  const markup = renderToStaticMarkup(MarkdownPreview({ source: converted }))
+
+  assert.match(markup, /<pre><code aria-label="sql source code">SELECT salary FROM Employees;<\/code><\/pre>/)
+  assert.match(markup, /<table>[\s\S]*<th style="text-align:left">name<\/th>[\s\S]*<td style="text-align:left">Arun<\/td>/)
+  assert.match(markup, /<blockquote><p>Sample-only result<\/p><\/blockquote>/)
+  assert.match(markup, /href="https:\/\/example\.test\/docs"/)
+})
+
+test('empty Markdown is rejected without modifying the original source', () => {
+  const source = '# Original note\n\nKeep this text.'
+  assert.throws(() => convertMarkdownSource(' \n\t'), /Paste Markdown source/)
+  assert.equal(source, '# Original note\n\nKeep this text.')
+})
+
+test('two Markdown conversions update the same saved file and survive a fresh fetch', async () => {
+  let stored: Note = {
+    ...sourceNote,
+    note_type: 'text',
+    title: 'Existing file',
+    source_content: 'Keep my rough notes.',
+  }
+  const methods: string[] = []
+  const patches: Record<string, unknown>[] = []
+  const client = createClient('https://supabase.example.test', 'test-publishable-key', {
+    global: {
+      fetch: async (input, init) => {
+        const url = new URL(String(input))
+        const method = init?.method ?? 'GET'
+        methods.push(method)
+        if (url.pathname.endsWith('/notes') && method === 'PATCH') {
+          assert.equal(
+            url.searchParams.get('id'),
+            `eq.${sourceNote.id}`,
+          )
+          assert.equal(
+            url.searchParams.get('owner_id'),
+            `eq.${sourceNote.owner_id}`,
+          )
+          const patch = JSON.parse(String(init?.body)) as Record<string, unknown>
+          patches.push(patch)
+          stored = {
+            ...stored,
+            ...patch,
+            updated_at: `2026-10-16T12:0${patches.length + 1}:00.000Z`,
+          }
+          return Response.json(stored)
+        }
+        if (url.pathname.endsWith('/notes') && method === 'GET') {
+          return Response.json(stored)
+        }
+        throw new Error(`Unexpected notes request: ${method}`)
+      },
+    },
+  })
+
+  let working: EditableNote = {
+    ...stored,
+    markdown_output: null,
+    markdown_converted_source: null,
+  }
+  const firstAppend = appendMarkdownToNote(
+    working,
+    '# SQL Joins\n\n**Join** tables.',
+  )
+  const { block: firstBlock, ...first } = firstAppend
+  working = { ...working, ...first }
+  let saved = await saveNote(
+    client,
+    stored.id,
+    stored.updated_at,
+    working,
+    stored.owner_id,
+  )
+  working = { ...working, ...saved }
+
+  const secondAppend = appendMarkdownToNote(
+    working,
+    '# SQL Aggregates\n\n`COUNT(*)`',
+  )
+  const { block: secondBlock, ...second } = secondAppend
+  working = { ...working, ...second }
+  assert.notEqual(firstBlock.id, secondBlock.id)
+  assert.deepEqual(
+    getStoredMarkdownBlocks(working.markdown_output).map((block) => block.source),
+    ['# SQL Joins\n\n**Join** tables.', '# SQL Aggregates\n\n`COUNT(*)`'],
+  )
+  saved = await saveNote(
+    client,
+    stored.id,
+    stored.updated_at,
+    working,
+    stored.owner_id,
+  )
+  working = { ...working, ...saved }
+  const withoutSecond = removeMarkdownBlockFromNote(working, secondBlock.id)
+  working = { ...working, ...withoutSecond }
+  saved = await saveNote(
+    client,
+    stored.id,
+    stored.updated_at,
+    working,
+    stored.owner_id,
+  )
+  const fresh = await getNote(client, sourceNote.id, sourceNote.owner_id)
+
+  assert.equal(saved.id, sourceNote.id)
+  assert.equal(saved.file_id, sourceNote.file_id)
+  assert.equal(saved.title, 'Existing file')
+  assert.equal(saved.note_type, 'text')
+  assert.equal(saved.source_content, 'Keep my rough notes.')
+  assert.deepEqual(
+    getStoredMarkdownBlocks(fresh.markdown_output).map((block) => block.source),
+    ['# SQL Joins\n\n**Join** tables.'],
+  )
+  assert.equal(fresh.markdown_converted_source, '# SQL Joins\n\n**Join** tables.')
+  assert.equal(fresh.id, sourceNote.id)
+  assert.equal(fresh.file_id, sourceNote.file_id)
+  assert.equal(fresh.title, 'Existing file')
+  assert.equal(fresh.source_content, 'Keep my rough notes.')
+  assert.equal(patches.length, 3)
+  assert.deepEqual(methods, ['PATCH', 'PATCH', 'PATCH', 'GET'])
+})
+
+test('Markdown append removes legacy duplicate source without touching rough notes', () => {
+  assert.equal(
+    removeDuplicateMarkdownFromRoughNotes(
+      'Keep this rough note.\n\n# Converted\n\nRaw source.',
+      '# Converted\n\nRaw source.',
+    ),
+    'Keep this rough note.',
+  )
+  assert.equal(
+    removeDuplicateMarkdownFromRoughNotes(
+      '# Converted\n\nRaw source.',
+      '# Converted\n\nRaw source.',
+    ),
+    '',
+  )
+  assert.equal(
+    removeDuplicateMarkdownFromRoughNotes(
+      'Independent rough notes.',
+      '# Converted\n\nRaw source.',
+    ),
+    'Independent rough notes.',
+  )
+})
+
+test('Markdown renderer decodes stored blocks without showing source serialization', () => {
+  const appended = appendMarkdownToNote(
+    { markdown_output: null, markdown_converted_source: null },
+    '# Formatted heading\n\n**Bold text**',
+  )
+  const markup = renderToStaticMarkup(
+    MarkdownPreview({ source: appended.markdown_output }),
+  )
+  assert.match(markup, /<h1>Formatted heading<\/h1>/)
+  assert.match(markup, /<strong>Bold text<\/strong>/)
+  assert.doesNotMatch(markup, /SHYAM-MARKDOWN-BLOCKS|&quot;source&quot;/)
+  assert.equal((markup.match(/Formatted heading/g) ?? []).length, 1)
+})
+
+test('editing a Markdown block changes only its source and keeps its stable ID and order', () => {
+  const initial = appendMarkdownToNote(
+    { markdown_output: null, markdown_converted_source: null },
+    '# First block',
+  )
+  const second = appendMarkdownToNote(initial, '```sql\n  SELECT 1;\n```')
+  const edited = updateMarkdownBlockInNote(
+    second,
+    initial.block.id,
+    '# Edited first block\n\n**Updated**',
+  )
+  const blocks = getStoredMarkdownBlocks(edited.markdown_output)
+
+  assert.deepEqual(blocks.map(({ id, source }) => ({ id, source })), [
+    { id: initial.block.id, source: '# Edited first block\n\n**Updated**' },
+    { id: second.block.id, source: '```sql\n  SELECT 1;\n```' },
+  ])
+  assert.equal(edited.markdown_converted_source, '# Edited first block\n\n**Updated**\n\n```sql\n  SELECT 1;\n```')
+})
+
+test('copy source selects only the requested Markdown block and preserves exact Markdown', () => {
+  const codeTableSource = [
+    '# SQL sample',
+    '',
+    '  ```sql',
+    '    SELECT *',
+    '    FROM users;',
+    '  ```',
+    '',
+    '| name | total |',
+    '| --- | ---: |',
+    '| Sam | **3** |',
+  ].join('\n')
+  const first = appendMarkdownToNote(
+    { markdown_output: null, markdown_converted_source: null },
+    codeTableSource,
+  )
+  const second = appendMarkdownToNote(first, '# Neighbour block')
+
+  assert.equal(
+    getMarkdownBlockSource(second.markdown_output, first.block.id),
+    codeTableSource,
+  )
+  assert.equal(
+    getMarkdownBlockSource(second.markdown_output, second.block.id),
+    '# Neighbour block',
+  )
+})
+
+test('editing a Markdown block does not append another block', () => {
+  const first = appendMarkdownToNote(
+    { markdown_output: null, markdown_converted_source: null },
+    '# Original',
+  )
+  const second = appendMarkdownToNote(first, '# Neighbour')
+  const updated = updateMarkdownBlockInNote(
+    second,
+    first.block.id,
+    '# Revised',
+  )
+  const blocks = getStoredMarkdownBlocks(updated.markdown_output)
+  assert.equal(blocks.length, 2)
+  assert.equal(blocks[0]?.id, first.block.id)
+  assert.equal(blocks[0]?.source, '# Revised')
+  assert.equal(blocks[1]?.id, second.block.id)
+  assert.equal(blocks[1]?.source, '# Neighbour')
+})
+
+test('full Markdown renderer retains tables, nested lists, inline syntax and fenced code', () => {
+  const source = [
+    '# Heading level one',
+    '## Heading level two',
+    '',
+    '**bold _bold italic_** and *italic* and ~~removed~~ plus `inline()`.',
+    '',
+    '| Left | Center | Right |',
+    '| :--- | :---: | ---: |',
+    '| a | b | c |',
+    '',
+    '- parent',
+    '  - child',
+    '    1. nested ordered',
+    '',
+    '- [x] done',
+    '- [ ] todo',
+    '',
+    '```javascript',
+    'function run() {',
+    '  return 1;',
+    '}',
+    '```',
+    '',
+    '> quoted **text**',
+    '',
+    '---',
+    '',
+    '[safe](https://example.test/path)',
+  ].join('\n')
+  const markup = renderToStaticMarkup(MarkdownPreview({ source }))
+
+  assert.match(markup, /<h1>Heading level one<\/h1>/)
+  assert.match(markup, /<h2>Heading level two<\/h2>/)
+  assert.match(markup, /<table>/)
+  assert.match(markup, /text-align:left/)
+  assert.match(markup, /text-align:center/)
+  assert.match(markup, /text-align:right/)
+  assert.match(markup, /<ul>[\s\S]*<li><p>parent<\/p><ul>[\s\S]*child/)
+  assert.match(markup, /type="checkbox"[^>]*checked=""/)
+  assert.match(markup, /type="checkbox"/)
+  assert.doesNotMatch(markup, /\[x\]|\[ \]/)
+  assert.match(markup, /<strong>bold <em>bold italic<\/em><\/strong>/)
+  assert.match(markup, /<del>removed<\/del>/)
+  assert.match(markup, /<code>inline\(\)<\/code>/)
+  assert.match(markup, /data-language="javascript"/)
+  assert.match(markup, /function run\(\) \{\n\s{2}return 1;\n\}/)
+  assert.match(markup, /<blockquote>/)
+  assert.match(markup, /<hr\/>/)
+  assert.match(markup, /href="https:\/\/example\.test\/path"/)
+})
+
+test('safe HTML panels and inline formatting render without executing unsupported content', () => {
+  const source = [
+    'Text before the panel.',
+    '',
+    '<div style="background-color:#dbeafe;color:#1e3a8a;padding:12px;border:1px solid #2563eb;border-radius:8px"><strong>Blue panel</strong> with <span style="color:purple">colored text</span></div>',
+    '',
+    '<u>underlined</u> and <kbd>Ctrl</kbd>',
+    '',
+    '<script>alert(1)</script>',
+    '',
+    '<unknown onclick="alert(1)">safe text</unknown>',
+    '',
+    'Text after the panel.',
+  ].join('\n')
+  const markup = renderToStaticMarkup(MarkdownPreview({ source }))
+  const expoRenderer = readFileSync(
+    new URL('../src/components/ExpoMarkdownPreview.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(markup, /Text before the panel\./)
+  assert.match(markup, /Text after the panel\./)
+  assert.match(markup, /class="markdown-html-panel"/)
+  assert.match(markup, /background-color:#dbeafe/)
+  assert.match(markup, /color:#1e3a8a/)
+  assert.match(markup, /border-color:#2563eb/)
+  assert.match(markup, /<u>underlined<\/u>/)
+  assert.match(markup, /class="markdown-kbd">Ctrl<\/kbd>/)
+  assert.match(expoRenderer, /parseSafeHtml\(/)
+  assert.match(expoRenderer, /node\.tag === 'div'/)
+  assert.match(expoRenderer, /node\.tag === 'u' && styles\.underline/)
+  assert.match(expoRenderer, /node\.tag === 'kbd' && styles\.kbd/)
+  assert.doesNotMatch(expoRenderer, /Unsupported HTML displayed as text/)
+  assert.match(markup, /safe text/)
+  assert.doesNotMatch(markup, /Unsupported HTML displayed as text/)
+  assert.doesNotMatch(markup, /onclick|alert\(1\)|<script>/)
+  const parsed = parseSafeHtml('<img src="javascript:alert(1)" onerror="alert(1)">plain')
+  assert.deepEqual(parsed, [{ tag: '#text', text: 'plain' }])
+})
+
+test('fenced SQL, JavaScript, JSON, and Mermaid remain readable code, not Markdown', () => {
+  const source = [
+    '```sql',
+    'SELECT *',
+    '  FROM notes;',
+    '```',
+    '```javascript',
+    'const answer = 42;',
+    '```',
+    '```json',
+    '{ "answer": 42 }',
+    '```',
+    '```mermaid',
+    'graph TD',
+    '  A --> B',
+    '```',
+    '$$E = mc^2$$',
+  ].join('\n')
+  const markup = renderToStaticMarkup(MarkdownPreview({ source }))
+  assert.match(markup, /data-language="sql"/)
+  assert.match(markup, /data-language="javascript"/)
+  assert.match(markup, /data-language="json"/)
+  assert.match(markup, /data-language="mermaid"/)
+  assert.match(markup, /SELECT \*\n {2}FROM notes;/)
+  assert.match(markup, /\{ &quot;answer&quot;: 42 \}/)
+  assert.match(markup, /graph TD\n {2}A --&gt; B/)
+  assert.doesNotMatch(markup, />sql<\/div>|>javascript<\/div>|<svg/)
+  assert.match(markup, /\$\$E = mc\^2\$\$/)
+  assert.match(markup, /class="markdown-math-fallback"/)
+})
+
+test('Markdown code blocks, task markers, quote, and horizontal rule keep semantic layout', () => {
+  const source = [
+    '- [x] checked task',
+    '- [ ] unchecked task',
+    '',
+    '1. ordered parent',
+    '   1. ordered child',
+    '      - nested bullet',
+    '',
+    '> quote with **emphasis**',
+    '',
+    '---',
+  ].join('\n')
+  const markup = renderToStaticMarkup(MarkdownPreview({ source }))
+  assert.match(markup, /class="markdown-task-item"/)
+  assert.match(markup, /<input[^>]*checked=""/)
+  assert.match(markup, /checked task/)
+  assert.match(markup, /unchecked task/)
+  assert.match(markup, /<ol[^>]*>[\s\S]*<ol[^>]*>[\s\S]*<ul>/)
+  assert.match(markup, /<blockquote><p>quote with <strong>emphasis<\/strong><\/p><\/blockquote>/)
+  assert.match(markup, /<hr\/>/)
+  assert.doesNotMatch(markup, /\[x\]|\[ \]/)
+  assert.doesNotMatch(markup, /Unsupported HTML/)
+})
+
+test('inline HTML breaks render as line breaks, not raw tags', () => {
+  const markup = renderToStaticMarkup(
+    MarkdownPreview({ source: 'first<br>second' }),
+  )
+  assert.match(markup, /first<br\/>second/)
+  assert.doesNotMatch(markup, /<script>/)
+})
+
+test('failed Markdown edit save retains existing rendered block and retry source', async () => {
+  const appended = appendMarkdownToNote(
+    { markdown_output: null, markdown_converted_source: null },
+    '# Saved version',
+  )
+  const edited = updateMarkdownBlockInNote(
+    appended,
+    appended.block.id,
+    '# User edit',
+  )
+  const noteBefore = {
+    ...sourceNote,
+    markdown_output: appended.markdown_output,
+    markdown_converted_source: appended.markdown_converted_source,
+  }
+  const client = createClient('https://supabase.example.test', 'test-publishable-key', {
+    global: {
+      fetch: async () => Response.json({ message: 'denied' }, { status: 403 }),
+    },
+  })
+  await assert.rejects(
+    saveNote(client, noteBefore.id, noteBefore.updated_at, edited, noteBefore.owner_id),
+    /could not be saved/,
+  )
+  assert.equal(getMarkdownBlockSource(noteBefore.markdown_output, appended.block.id), '# Saved version')
+  assert.equal(getStoredMarkdownBlocks(edited.markdown_output)[0]?.source, '# User edit')
+})
+
+test('failed Markdown block deletion preserves the persisted block', async () => {
+  const appended = appendMarkdownToNote(
+    { markdown_output: null, markdown_converted_source: null },
+    '# Keep this block',
+  )
+  const noteBefore = {
+    ...sourceNote,
+    markdown_output: appended.markdown_output,
+    markdown_converted_source: appended.markdown_converted_source,
+  }
+  const client = createClient('https://supabase.example.test', 'test-publishable-key', {
+    global: {
+      fetch: async () => Response.json({ message: 'denied' }, { status: 403 }),
+    },
+  })
+  const deletion = removeMarkdownBlockFromNote(noteBefore, appended.block.id)
+  await assert.rejects(
+    saveNote(
+      client,
+      noteBefore.id,
+      noteBefore.updated_at,
+      deletion,
+      noteBefore.owner_id,
+    ),
+    /could not be saved/,
+  )
+  assert.deepEqual(getStoredMarkdownBlocks(noteBefore.markdown_output), [
+    appended.block,
+  ])
+})
+
+test('Markdown blocks edit inline while copy and delete controls remain', () => {
+  const notesScreen = readFileSync(
+    new URL('../app/(app)/notes.tsx', import.meta.url),
+    'utf8',
+  )
+  const editorScreen = readFileSync(
+    new URL('../app/(app)/note.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.doesNotMatch(notesScreen, /Add MD Converter|createMarkdownNote|markdownPreviewCard/)
+  assert.doesNotMatch(notesScreen, /markdownFileId|markdownDraft|markdownBusy/)
+  assert.doesNotMatch(editorScreen, /createMarkdownNote|noteRouteForSelection/)
+  const convertHandler = editorScreen.match(
+    /async function convertMarkdown\(\) \{([\s\S]*?)\n {2}\}/,
+  )?.[1]
+  assert.ok(convertHandler)
+  assert.match(convertHandler, /appendMarkdownToNote\(current, input\)/)
+  assert.match(convertHandler, /await saveMarkdownValue\(currentNote, next\)/)
+  assert.match(convertHandler, /await queue\.flush\(\)/)
+  assert.match(convertHandler, /setMarkdownOpen\(false\)[\s\S]*?setMarkdownDraft\(''\)/)
+  assert.match(convertHandler, /catch \(error\)[\s\S]*?setMarkdownError\(/)
+  assert.doesNotMatch(convertHandler, /\.insert\(|\.delete\(|router\.(push|replace)\(/)
+  assert.match(convertHandler, /pendingMarkdownSave\.current = \{ source: input, blockId: block\.id \}/)
+  assert.match(convertHandler, /pendingMarkdownSave\.current = null[\s\S]*?setMarkdownOpen\(false\)/)
+  const failedSaveHandler = convertHandler.slice(
+    convertHandler.indexOf('} catch (error)'),
+  )
+  assert.doesNotMatch(
+    failedSaveHandler,
+    /setMarkdownDraft\(['"]['"]\)|setMarkdownOpen\(false\)|pendingMarkdownSave\.current = null/,
+  )
+  assert.match(editorScreen, /setMarkdownDraft\(''\)[\s\S]*?setMarkdownError\(''\)[\s\S]*?setMarkdownOpen\(true\)/)
+  assert.match(editorScreen, /if \(markdownBusyLock\.current\) return/)
+  assert.match(editorScreen, /pending\.source === input/)
+  assert.match(editorScreen, /markdownBusy \? 'Saving…' : 'Convert Notes'/)
+  assert.match(editorScreen, /getStoredMarkdownBlocks\(value\.markdown_output\)\.map/)
+  assert.match(editorScreen, /accessibilityLabel=\{`Copy Markdown block \$\{index \+ 1\}`\}/)
+  assert.match(editorScreen, /accessibilityLabel=\{`Edit Markdown block \$\{index \+ 1\}`\}[\s\S]*?onPress=\{\(\) => editMarkdownBlock\(block\)\}/)
+  assert.match(editorScreen, /markdownInlineEditor/)
+  assert.doesNotMatch(editorScreen, /✎/)
+  assert.match(editorScreen, /onPress=\{\(\) => void copyMarkdownBlock\(block\.id\)\}/)
+  assert.match(editorScreen, /Clipboard\.setStringAsync\(source\)/)
+  assert.match(editorScreen, /updateMarkdownBlockInNote\(current, blockId, markdownEditDraft\)/)
+  assert.match(editorScreen, /Save the current note before editing this Markdown block/)
+  assert.match(editorScreen, /markdownBusy \? 'Saving…' : 'Save'/)
+  assert.doesNotMatch(editorScreen, /Convert and Save|accessibilityLabel=\{`Edit Markdown source|markdownEditModal/)
+  assert.match(editorScreen, /Delete Markdown block \$\{index \+ 1\}/)
+  assert.match(editorScreen, /onPress=\{\(\) => void deleteMarkdownBlock\(block\.id\)\}/)
+  const deleteHandler = editorScreen.match(
+    /async function deleteMarkdownBlock\(blockId: string\) \{([\s\S]*?)\n {2}\}/,
+  )?.[1]
+  assert.ok(deleteHandler)
+  assert.match(deleteHandler, /removeMarkdownBlockFromNote\(current, blockId\)/)
+  assert.match(deleteHandler, /await saveMarkdownValue\(currentNote, next\)/)
+  assert.match(deleteHandler, /catch \(error\)[\s\S]*?setSaveError\(/)
+  assert.doesNotMatch(deleteHandler, /setValue\(|valueRef\.current\s*=/)
+  assert.match(editorScreen, /editable=\{!markdownBusy\}/)
+  assert.match(editorScreen, /source_content: removeDuplicateMarkdownFromRoughNotes\(/)
+  assert.match(editorScreen, /accessibilityLabel="Note content"/)
+  assert.ok(
+    editorScreen.indexOf('getStoredMarkdownBlocks(value.markdown_output).map') <
+      editorScreen.indexOf('accessibilityLabel="Note content"'),
+  )
+  assert.match(editorScreen, /async function leaveEditor\(\) \{\s*if \(markdownBusyLock\.current\)/)
+  assert.match(editorScreen, /async function confirmDeleteNote\(\) \{\s*if \(!client \|\| !session \|\| !noteRef\.current \|\| deleteBusyLock\.current\) return\s*if \(markdownBusyLock\.current\)/)
+  for (const label of ['SQL', 'Markdown', 'Copy Note', 'Delete Note']) {
+    assert.match(editorScreen, new RegExp(`<IconAction label="${label}"`))
+  }
+  assert.match(editorScreen, /function openMarkdownEditor\(\) \{[\s\S]*?setMarkdownOpen\(true\)/)
+  assert.match(editorScreen, /accessibilityLabel="Markdown input"/)
+  assert.match(editorScreen, /Convert Notes/)
+  assert.match(editorScreen, /onPress=\{cancelMarkdownEditor\}/)
+  assert.doesNotMatch(editorScreen, /Delete converted content/)
+  assert.doesNotMatch(editorScreen, /setMarkdownResult/)
+  assert.match(convertHandler, /if \(markdownBusyLock\.current\) return/)
+  assert.doesNotMatch(editorScreen, /requestNoteAi/)
+})
+
+test('note editor has an outer page scroll and an independent bounded note-content scroll', () => {
+  const editorScreen = readFileSync(
+    new URL('../app/(app)/note.tsx', import.meta.url),
+    'utf8',
+  )
+  const styles = editorScreen.slice(editorScreen.indexOf('const styles = StyleSheet.create'))
+  const appCss = readFileSync(new URL('../src/note-editor.css', import.meta.url), 'utf8')
+  const rootLayout = readFileSync(new URL('../app/_layout.tsx', import.meta.url), 'utf8')
+  const pageHeader = editorScreen.indexOf('<View style={styles.header}>')
+  const editorHeader = editorScreen.indexOf('<View style={styles.editorHeader}>')
+  const title = editorScreen.indexOf('accessibilityLabel="Note title"')
+  const contentScroll = editorScreen.indexOf('<ScrollView', title)
+  const markdownBlocks = editorScreen.indexOf('getStoredMarkdownBlocks(value.markdown_output).map', contentScroll)
+  const noteContent = editorScreen.indexOf('accessibilityLabel="Note content"')
+  const contentScrollEnd = editorScreen.indexOf('</ScrollView>', noteContent)
+  const sqlPanel = editorScreen.indexOf('{sqlOpen ? (', contentScrollEnd)
+
+  assert.match(editorScreen, /<ExpoScreen scroll>\s*<View style=\{\[styles\.page/)
+  assert.ok(pageHeader >= 0 && pageHeader < editorHeader)
+  assert.ok(editorHeader >= 0 && editorHeader < title)
+  assert.ok(title < contentScroll && contentScroll < markdownBlocks)
+  assert.ok(markdownBlocks < noteContent && noteContent < contentScrollEnd && contentScrollEnd < sqlPanel)
+  assert.match(editorScreen, /nativeID="note-editor-content-scroll"[\s\S]*?nestedScrollEnabled/)
+  assert.match(editorScreen, /maxHeight: noteContentMaxHeight/)
+  assert.match(editorScreen, /Math\.max\(180, Math\.min\(windowHeight \* 0\.65, 680\)\)/)
+  assert.match(rootLayout, /import '\.\.\/src\/note-editor\.css'/)
+  assert.doesNotMatch(editorScreen, /fixedEditorHeader|editorScroll/)
+  assert.match(editorScreen, /styles\.header[\s\S]*?<IconAction label="SQL"[\s\S]*?<IconAction label="Markdown"[\s\S]*?<IconAction label="Copy Note"[\s\S]*?<IconAction label="Delete Note"[\s\S]*?<ThemeToggle \/>[\s\S]*<SaveIndicator/)
+  assert.match(styles, /page: \{[^}]*maxWidth: 920/)
+  assert.match(styles, /editorHeader: \{ gap: 8 \}/)
+  assert.match(styles, /noteContentScroll: \{ flexGrow: 0, flexShrink: 1, width: '100%' \}/)
+  assert.match(appCss, /#note-editor-content-scroll\s*\{[^}]*overscroll-behavior-y: contain;/)
+  assert.doesNotMatch(styles, /fixedEditorHeader|editorScroll/)
+})
+
+test('Markdown collapse is independent by stable block ID and animates accessibly', () => {
+  const editorScreen = readFileSync(
+    new URL('../app/(app)/note.tsx', import.meta.url),
+    'utf8',
+  )
+  const css = readFileSync(new URL('../src/App.css', import.meta.url), 'utf8')
+  const bodyStart = editorScreen.indexOf('function AnimatedMarkdownBody')
+  const bodyEnd = editorScreen.indexOf('\nfunction IconAction', bodyStart)
+  const animatedBody = editorScreen.slice(bodyStart, bodyEnd)
+  const toggleStart = editorScreen.indexOf('function MarkdownBlockToggle')
+  const toggleEnd = editorScreen.indexOf('\nfunction IconAction', toggleStart)
+  const toggleComponent = editorScreen.slice(toggleStart, toggleEnd)
+  const blockStart = editorScreen.indexOf('getStoredMarkdownBlocks(value.markdown_output).map')
+  const blockEnd = editorScreen.indexOf('{markdownOpen ?', blockStart)
+  const blockList = editorScreen.slice(blockStart, blockEnd)
+  const editStart = editorScreen.indexOf('function editMarkdownBlock(')
+  const editEnd = editorScreen.indexOf('\n  async function saveMarkdownBlockEdit', editStart)
+  const editHandler = editorScreen.slice(editStart, editEnd)
+  const deleteStart = editorScreen.indexOf('async function deleteMarkdownBlock(')
+  const deleteEnd = editorScreen.indexOf('\n  function editMarkdownBlock', deleteStart)
+  const deleteHandler = editorScreen.slice(deleteStart, deleteEnd)
+
+  assert.match(editorScreen, /useState<Record<string, boolean>>\(\{\}\)/)
+  assert.match(blockList, /collapsedMarkdownBlocks\[block\.id\]/)
+  assert.doesNotMatch(blockList, /collapsedMarkdownBlocks\[index\]|collapsedMarkdownBlocks\[block\.source\]/)
+  assert.match(toggleComponent, /accessibilityState=\{\{ expanded: !collapsed, disabled \}\}/)
+  assert.match(toggleComponent, /accessibilityLabel=\{label\}/)
+  assert.match(toggleComponent, /onFocus=\{\(\) => setShowTooltip\(true\)\}/)
+  assert.match(toggleComponent, /{label}/)
+  assert.ok(blockList.indexOf('Copy Markdown block') < blockList.indexOf('<AnimatedMarkdownBody'))
+  assert.ok(blockList.indexOf('Delete Markdown block') < blockList.indexOf('<AnimatedMarkdownBody'))
+  assert.match(blockList, /onToggle=\{\(\) => setCollapsedMarkdownBlocks\(\(current\) => \(\{[\s\S]*?\[block\.id\]: !current\[block\.id\]/)
+  assert.match(editHandler, /setCollapsedMarkdownBlocks\(\(current\) => \(\{ \.\.\.current, \[block\.id\]: false \}\)\)/)
+  assert.ok(editHandler.indexOf('[block.id]: false') < editHandler.indexOf('setEditingMarkdownBlockId(block.id)'))
+  assert.match(animatedBody, /Animated\.timing\(progress/)
+  assert.match(animatedBody, /outputRange: \[0, Math\.max\(bodyHeight, 1\)\]/)
+  assert.match(animatedBody, /accessibilityElementsHidden=\{collapsed\}/)
+  assert.match(animatedBody, /importantForAccessibility=\{collapsed \? 'no-hide-descendants' : 'auto'\}/)
+  assert.match(animatedBody, /AccessibilityInfo\.isReduceMotionEnabled/)
+  assert.match(animatedBody, /duration: reduceMotion \? 0 : 180/)
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)/)
+  assert.match(editorScreen, /delete next\[blockId\]/)
+  assert.ok(deleteHandler.indexOf('await saveMarkdownValue(currentNote, next)') < deleteHandler.lastIndexOf('delete next[blockId]'))
+  assert.match(blockList, /onPress=\{\(\) => void copyMarkdownBlock\(block\.id\)\}/)
+  assert.match(blockList, /onPress=\{\(\) => void deleteMarkdownBlock\(block\.id\)\}/)
+  assert.doesNotMatch(editorScreen, /setCollapsedMarkdownBlocks\(\{\}\)/)
 })
 
 test('AI requests send only the expected source and bearer auth, with safe failures', async () => {

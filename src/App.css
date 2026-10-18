@@ -1291,6 +1291,12 @@ select:disabled,
   padding: 16px;
 }
 
+.markdown-result {
+  border-color: #9bb8e8;
+  background: #f4f8ff;
+  overflow-wrap: anywhere;
+}
+
 .ai-result h3 {
   margin: 0 0 7px;
   font-size: 14px;
@@ -1369,6 +1375,178 @@ select:disabled,
   margin: 12px 0;
   border-left: 3px solid #c9bbdf;
   padding-left: 12px;
+}
+
+.markdown-preview {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.markdown-preview table {
+  border-collapse: collapse;
+}
+
+.markdown-preview th {
+  background: #eaf1fc;
+}
+
+.markdown-preview h1,
+.markdown-preview h2,
+.markdown-preview h3,
+.markdown-preview h4,
+.markdown-preview h5,
+.markdown-preview h6 {
+  margin: 1em 0 0.45em;
+  line-height: 1.3;
+}
+
+.markdown-preview ul,
+.markdown-preview ol {
+  padding-inline-start: 1.6rem;
+}
+
+.markdown-preview li > ul,
+.markdown-preview li > ol {
+  margin-block: 0.3em;
+}
+
+.markdown-preview blockquote {
+  margin: 0.8em 0;
+  border-left: 4px solid #6c9ce8;
+  border-radius: 0 6px 6px 0;
+  background: rgb(64 122 204 / 7%);
+  padding: 0.35em 0.9em;
+}
+
+.markdown-preview blockquote > :first-child {
+  margin-top: 0;
+}
+
+.markdown-preview blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-preview hr {
+  height: 1px;
+  margin: 1.2em 0;
+  border: 0;
+  background: #b9b4c2;
+}
+
+.markdown-preview th,
+.markdown-preview td {
+  border: 1px solid #c9c4d0;
+  padding: 7px 10px;
+}
+
+.markdown-task-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+}
+
+.markdown-task-item > input {
+  flex: 0 0 auto;
+  margin: 0.35em 0 0;
+}
+
+.markdown-task-item > div {
+  min-width: 0;
+}
+
+.markdown-html-panel {
+  box-sizing: border-box;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.markdown-kbd {
+  display: inline-block;
+  border: 1px solid #aab1bd;
+  border-radius: 4px;
+  background: #f1f5f9;
+  padding: 1px 5px;
+  font: 0.9em Consolas, 'Courier New', monospace;
+}
+
+.markdown-math-fallback {
+  border-radius: 4px;
+  background: rgb(88 73 112 / 8%);
+  padding: 2px 5px;
+  font-family: Consolas, 'Courier New', monospace;
+  white-space: pre-wrap;
+}
+
+.markdown-math-fallback code {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 10px;
+}
+
+.markdown-preview pre {
+  overflow: auto;
+  max-width: 100%;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.markdown-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.markdown-table-scroll table {
+  display: table;
+  width: max-content;
+  min-width: 100%;
+}
+
+.markdown-code-block {
+  position: relative;
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 8px;
+  background: rgb(88 73 112 / 8%);
+}
+
+.markdown-code-block[data-language] pre {
+  padding-top: 28px;
+}
+
+.markdown-code-language {
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  z-index: 1;
+  border-radius: 4px;
+  background: #e7e2ed;
+  padding: 2px 6px;
+  color: #62596b;
+  font: 10px/1.4 Consolas, 'Courier New', monospace;
+}
+
+.markdown-code-block pre {
+  max-width: 100%;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.markdown-code-block code {
+  padding: 0;
+  background: transparent;
+  white-space: inherit;
+}
+
+.markdown-html-fallback {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .recovery-actions {

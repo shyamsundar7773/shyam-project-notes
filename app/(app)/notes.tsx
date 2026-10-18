@@ -27,6 +27,7 @@ import {
   noteColorForId,
   type Note,
 } from '../../src/lib/notes'
+import { getStoredMarkdownBlocks } from '../../src/lib/markdown'
 import { RequestSequence } from '../../src/lib/request-sequence'
 import {
   filesForSubtopic,
@@ -45,7 +46,9 @@ function one(value: string | string[] | undefined): string {
 function preview(note: Note): string {
   const content =
     note.note_type === 'markdown'
-      ? note.markdown_output || note.source_content
+      ? getStoredMarkdownBlocks(note.markdown_output)
+          .map((block) => block.source)
+          .join('\n\n') || note.source_content
       : note.source_content
   const safeText = content.replace(/\s+/g, ' ').trim()
   return safeText.length > 180 ? `${safeText.slice(0, 180)}…` : safeText || 'No content yet.'

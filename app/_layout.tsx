@@ -1,3 +1,4 @@
+import '../src/note-editor.css'
 import { Stack } from 'expo-router'
 import { ExpoAuthProvider } from '../src/components/ExpoAuthProvider'
 import { ThemeProvider } from '../src/components/ThemeProvider'

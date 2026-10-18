@@ -222,6 +222,16 @@ migrations and their owner RLS policies. Hosted schema/RLS, real cloud
 persistence, rendered browser/Expo Go behavior, and live Gemini/Auth behavior
 have not been verified.
 
+Markdown blocks use the shared Marked GFM tokenizer and keep their original
+source for editing and copying. The renderer supports headings, nested/task
+lists, tables, links, quotes, and fenced code. Its limited HTML allowlist is
+`a`, `b`, `br`, `div`, `em`, `i`, `kbd`, `p`, `span`, `strong`, and `u`;
+inline styles are restricted to validated colors, pixel padding/border radius,
+and simple solid borders. Scripts, event handlers, unsafe URLs, and unsupported
+elements are never rendered; unsupported tags are omitted while their safe text
+content is retained. LaTeX and Mermaid are shown as readable source, not
+typeset or executed diagrams.
+
 Run frontend checks with `npm run lint`, `npm run build`, and `npm test`.
 From `backend/`, run `npm run build` and `npm test`.
 
